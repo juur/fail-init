@@ -1,0 +1,118 @@
+SHELL := /bin/sh
+
+srcdir := @@SRCDIR@@
+objdir := @@OBJDIR@@
+
+.SUFFIXES:
+.SUFFIXES: .c .o
+
+DESTDIR		:=
+CC			:= @@CC@@
+CXX			:= @@CXX@@
+LEX			:= @@LEX@@
+YACC		:= @@YACC@@
+YFLAGS		:= @@YFLAGS@@ -d -t
+CAT			:= cat
+TAR			:= tar
+RM			?= rm -f
+LFLAGS		:= @@LFLAGS@@
+CPPFLAGS	:= @@CPPFLAGS@@
+CFLAGS		:= @@CFLAGS@@ -g
+LDFLAGS 	:= -L$(srcdir)/src -L$(objdir) -L. @@LDFLAGS@@
+PKGCONFIG	:= pkg-config
+HELP2MAN	:= help2man
+
+INSTALL			:= install -c
+INSTALL_PROGRAM	:= $(INSTALL)
+INSTALL_DATA	:= $(INSTALL) -m 644
+
+prefix      := @@PREFIX@@
+datarootdir := @@DATAROOTDIR@@
+datadir     := @@DATADIR@@
+exec_prefix := @@EXECPREFIX@@
+bindir      := @@BINDIR@@
+sbindir     := @@SBINDIR@@
+libexecdir  := @@LIBEXECDIR@@
+docdir      := @@DOCDIR@@
+infodir     := @@INFODIR@@
+libdir      := @@LIBDIR@@
+mandir      := @@MANDIR@@
+localedir   := @@LOCALEDIR@@
+
+PACKAGE		:= $(shell $(CAT) "$(srcdir)/misc/PACKAGE")
+VERSION		:= $(shell $(CAT) "$(srcdir)/misc/VERSION")
+
+all_SRCS     := $(wildcard $(srcdir)/src/*.c)
+all_Y_SRCS	 := $(wildcard $(srcdir)/src/*.y)
+all_L_SRCS	 := $(wildcard $(srcdir)/src/*.l)
+
+all_OBJS	 :=
+all_OBJS	 += $(all_Y_SRCS:.y=.tab.o)
+all_OBJS	 += $(all_L_SRCS:.l=.yy.o)
+all_OBJS	 += $(all_SRCS:.c=.o)
+
+package_OBJS := $(addprefix $(objdir)/,$(notdir $(all_OBJS)))
+
+CPPFLAGS += -I$(objdir) -I$(srcdir)/src
+
+.PHONY: all
+all: $(objdir)/$(PACKAGE)
+
+$(objdir)/.d:
+	@mkdir -p "$(objdir)/.d" 2>/dev/null
+
+$(objdir)/$(PACKAGE): $(package_OBJS)
+	$(CC) $(LDFLAGS) $(package_OBJS) -o $@
+
+$(objdir)/%.yy.h $(objdir)/%.yy.c $(objdir)/.d/%.yy.d: $(srcdir)/src/%.l $(objdir)/.d
+	$(LEX) $(LFLAGS) -o $(<F:%.l=%.yy.c) --header-file=$(<F:%.l=%.yy.h) $<
+	$(CC) $(CFLAGS) -MM -MG -MF $(objdir)/.d/$(<F:%.l=%.yy.d) $(<F:%.l=%.yy.c)
+
+$(objdir)/%.tab.h $(objdir)/%.tab.c $(objdir)/.d/%.tab.d: $(srcdir)/src/%.y $(objdir)/.d
+	$(YACC) $(YFLAGS) -b $* $<
+	$(CC) $(CFLAGS) -MM -MG -MF $(objdir)/.d/$(<F:%.y=%.tab.d) $(<F:%.y=%.tab.c)
+
+$(objdir)/.d/%.d: $(srcdir)/src/%.c $(objdir)/.d
+	$(CC) $(CFLAGS) -MM -MG -MF $@ $<
+
+$(objdir)/%.tab.o: $(objdir)/%.tab.c $(objdir)/%.tab.h $(objdir)/.d/%.tab.d
+	$(CC) -c $(CFLAGS) $(CPPFLAGS) $< -o $@
+
+$(objdir)/%.tab.o: $(objdir)/%.yy.c %.yy.h $(objdir)/.d/%.tab.d
+	$(CC) -c $(CFLAGS) $(CPPFLAGS) $< -o $@
+
+$(objdir)/%.o: $(srcdir)/src/%.c $(objdir)/.d/%.d
+	$(CC) -c $(CFLAGS) $(CPPFLAGS) $< -o $@
+
+.PHONY: install uninstall
+
+install:
+
+uninstall:
+
+.PHONY: mostlyclean clean distclean maintainer-clean
+
+mostlyclean:
+	$(RM) $(package_OBJS) $(objdir)/$(PACKAGE)
+
+clean: mostlyclean
+	$(RM) $(objdir)/*.tab.h $(objdir)/*.tab.c $(objdir)/*.yy.c $(objdir)/*.yy.h
+	$(RM) -r $(objdir)/.d
+
+distclean: clean
+	$(RM) config.log config.status
+	$(RM) $(objdir)/config.h{,~} $(objdir)/Makefile
+
+maintainer-clean: distclean
+	$(RM) $(PACKAGE)-$(VERSION).tar.xz
+
+.PHONY: dist
+
+dist:
+	pushd $(srcdir) >/dev/null ; \
+		$(TAR) -acf $(objdir)/$(PACKAGE)-$(VERSION).tar.xz \
+		--transform="s,^./,,;s,^,$(PACKAGE)-$(VERSION)/," \
+		README.md COPYING src misc Makefile.in configure ; \
+		popd >/dev/null
+
+-include $(all_SRCS:$(srcdir)/src/%.c=$(objdir)/.d/%.d)
