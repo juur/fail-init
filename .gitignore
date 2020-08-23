@@ -10,3 +10,4 @@ init
 inittab
 root*
 initramfs*
+init.d
