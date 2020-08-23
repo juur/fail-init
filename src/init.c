@@ -1,17 +1,26 @@
 #define _XOPEN_SOURCE 700
 
+#include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <regex.h>
 #include <signal.h>
-#include <stdlib.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <err.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
-#include <regex.h>
-#include <errno.h>
+#include <sys/wait.h>
+#include <sys/mount.h>
+#include <unistd.h>
+
+#define __USE_MISC
+#include <syslog.h>
+#undef  __USE_MISC
 
 /* enum definitions */
 
@@ -33,19 +42,54 @@ enum actions {
 	ACT_KBRREQUEST
 };
 
-/* structure and type defintions */
+#define RUNLEVEL_0 (1 << 0)
+#define RUNLEVEL_1 (1 << 1)
+#define RUNLEVEL_2 (1 << 2)
+#define RUNLEVEL_3 (1 << 3)
+#define RUNLEVEL_4 (1 << 4)
+#define RUNLEVEL_5 (1 << 5)
+#define RUNLEVEL_6 (1 << 6)
+#define RUNLEVEL_7 (1 << 7)
+#define RUNLEVEL_8 (1 << 8)
+#define RUNLEVEL_9 (1 << 9)
+
+#define RUNLEVEL_S (1 << 10)
+
+#define RUNLEVEL_A (1 << 11)
+#define RUNLEVEL_B (1 << 12)
+#define RUNLEVEL_C (1 << 13)
+
+#define PIPE_NAME	"/run/initctl"
+
+/* structure and type defintions (and tightly coupled defines) */
 
 struct entry {
 	const char *	id;
-	const char *	runlevels;
 	const char *	process;
 	enum actions	action;
 
+	long	runlevels;
 	bool	wait;
 	bool	no_utmp;
 
 	pid_t	pid;
 };
+
+struct init_request {
+	int32_t	magic;
+	int32_t	cmd;
+	int32_t	runlevel;
+	int32_t	sleeptime;
+	int8_t	data[368];
+} __attribute__ ((packed));
+
+#define INIT_REQ_MAGIC	0x03091969
+
+#define CMD_SET_RUNLVL		1
+#define CMD_PWR_FAILSOON	2
+#define CMD_PWR_FAILNOW		3
+#define CMD_PWR_OK			4
+#define CMD_SET_ENVP		6
 
 struct act_name {
 	const char *name;
@@ -86,7 +130,11 @@ static int opt_auto			= 0;
 static int opt_emerg		= 0;
 static int opt_def_runlevel = -1;
 
-static int run_level		= -1;
+static int pipe_fd			= -1;
+
+static char run_level_id		= '\0';
+static long run_level			= -1;
+static long old_level			= -1;
 
 static struct entry *entries	= NULL;
 static int num_entries			= 0;
@@ -95,6 +143,90 @@ static const char *opt_cfg_filename	= "/etc/inittab";
 static const int cfg_regnmatch		= sizeof(cfg_regmatch) / sizeof(regmatch_t);
 
 /* private function defintions */
+
+static void errx(int eval, const char *const fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsyslog(LOG_ERR, fmt, ap);
+	va_end(ap);
+
+	exit(eval);
+}
+
+static void err(int eval, const char *const fmt, ...)
+{
+	const int save_err = errno;
+	va_list ap;
+	
+	va_start(ap, fmt);
+	const int len = vsnprintf(NULL, 0, fmt, ap);
+	va_end(ap);
+
+	char *newfmt = malloc(len + 1);
+
+	if( !newfmt ) {
+		perror("init: err");
+		errx(EXIT_FAILURE, "unable to malloc within err");
+	}
+
+	va_start(ap, fmt);
+	vsnprintf(newfmt, len + 1, fmt, ap);
+	va_end(ap);
+
+	syslog(LOG_ERR, "%s: %s", newfmt, strerror(save_err));
+	free(newfmt);
+
+	exit(eval);
+}
+
+
+static void warn(const char *const fmt, ...)
+{
+	int save_err = errno;
+	va_list ap;
+	
+	va_start(ap, fmt);
+	const int len = vsnprintf(NULL, 0, fmt, ap);
+	va_end(ap);
+
+	char *newfmt = malloc(len + 1);
+
+	if( !newfmt ) {
+		perror("init: warn");
+		errx(EXIT_FAILURE, "unable to malloc within warn");
+	}
+
+	va_start(ap, fmt);
+	vsnprintf(newfmt, len + 1, fmt, ap);
+	va_end(ap);
+
+	syslog(LOG_WARNING, "%s: %s", newfmt, strerror(save_err));
+
+	free(newfmt);
+}
+
+static void warnx(const char *const fmt, ...)
+{
+	va_list ap;
+	
+	va_start(ap, fmt);
+	vsyslog(LOG_ERR, fmt, ap);
+	va_end(ap);
+}
+
+
+static int get_runlevel(const char c)
+{
+	if( c >= '0' && c <= '9' )
+		return (1 << (c - '0'));
+	else if( c == 's')
+		return RUNLEVEL_S;
+	else if( c >= 'a' && c <= 'c' )
+		return (1 << (11 - (c - 'a')));
+	return -1;
+}
 
 static enum actions string_to_action(const char *const str)
 {
@@ -126,11 +258,8 @@ static char **split(const char *text, const char *delim)
 	char *str;
 	char **ret, *saveptr;
 
-	while( (tmp = strstr(tmp, delim)) != NULL ) 
+	while( (tmp = strstr(tmp+1, delim)) != NULL ) 
 		count++;
-
-	if( count == 0 )
-		goto split_err0;
 
 	retlen = count + 1;
 
@@ -192,11 +321,6 @@ static void read_config(void)
 
 	for(;;)
 	{
-		if( id ) {			free(id);			id			= NULL; }
-		if( runlevels ) {	free(runlevels);	runlevels	= NULL; }
-		if( action_name ) {	free(action_name);	action_name	= NULL; }
-		if( process ) {		free(process);		process		= NULL; }
-
 		if( feof(cfg) )
 			break;
 
@@ -250,7 +374,7 @@ static void read_config(void)
 
 		if( (action = string_to_action(action_name)) == -1 ) {
 			warnx("invalid action '%s' on line %d", action_name, line);
-			continue;
+			goto parse_skip;
 		}
 
 		bool skip = false;
@@ -266,7 +390,7 @@ static void read_config(void)
 			}
 
 		if( skip )
-			continue;
+			goto parse_skip;
 
 		switch( action )
 		{
@@ -281,32 +405,35 @@ static void read_config(void)
 		}
 
 		if( skip )
-			continue;
+			goto parse_skip;
 
 		int ent_id = num_entries;
 
 		if( (entries = realloc(entries, 
 						sizeof(struct entry) * ++num_entries)) == NULL ) {
 			warn("unable to allocate memory for line %d", line);
-			continue;
+			goto parse_skip;
 		}
 
 		memset(&entries[ent_id], 0, sizeof(struct entry));
 
 		entries[ent_id].id = id;
-		entries[ent_id].runlevels = runlevels;
+		for( int i = 0; runlevels[i]; i++ )
+			entries[ent_id].runlevels |= get_runlevel(runlevels[i]);
 		entries[ent_id].action = action;
 		entries[ent_id].process = process;
 		entries[ent_id].no_utmp = no_utmp;
 
-		printf("DEBUG: added entry %s:%s:%s:%s\n", 
-				id, runlevels, action_name, process);
+		continue;
+
+parse_skip:
+		if( id ) {			free(id);			id			= NULL; }
+		if( runlevels ) {	free(runlevels);	runlevels	= NULL; }
+		if( action_name ) {	free(action_name);	action_name	= NULL; }
+		if( process ) {		free(process);		process		= NULL; }
+		continue;
 	}
 
-	if( id ) {			free(id);			id			= NULL; }
-	if( runlevels ) {	free(runlevels);	runlevels	= NULL; }
-	if( action_name ) {	free(action_name);	action_name	= NULL; }
-	if( process ) {		free(process);		process		= NULL; }
 }
 
 static void parse_command_line(int argc, char *argv[])
@@ -338,8 +465,6 @@ static void parse_command_line(int argc, char *argv[])
 		}
 	}
 
-	printf("DEBUG: optind=%d, argc=%d\n", optind, argc);
-
 	if( optind - argc > 1 ) {
 		warnx("invalid arguments passed");
 	} else if( argc - optind == 1) {
@@ -349,6 +474,37 @@ static void parse_command_line(int argc, char *argv[])
 		else
 			warnx("invalid runlevel '%c' as argument", rl);
 	}
+}
+
+static void sighup_handler(int sig)
+{
+	syslog(LOG_NOTICE, "received SIGHUP, reloading configuration file");
+}
+
+static void sigusr1_handler(int sig)
+{
+	syslog(LOG_NOTICE, "received SIGUSR1");
+}
+
+static void sigusr2_handler(int sig)
+{
+	syslog(LOG_NOTICE, "received SIGUSR2");
+}
+
+static void sigint_handler(int sig)
+{
+	syslog(LOG_NOTICE, "received SIGINT, CTRL-ALT-DEL pressed");
+	exit(EXIT_SUCCESS);
+}
+
+static void sigwinch_handler(int sig)
+{
+	syslog(LOG_NOTICE, "received SIGWINCH, KeyboarSignal pressed");
+}
+
+static void sigpwr_handler(int sig)
+{
+	syslog(LOG_NOTICE, "received SIGPWR");
 }
 
 static void chld_handler(int sig)
@@ -361,21 +517,61 @@ static void chld_handler(int sig)
 		if( errno == ECHILD )
 			break;
 
+		printf("DEBUG: chld_handler on %d\n", pid);
+
 		for( int i = 0; i < num_entries; i++ ) {
-			if( entries[i].pid == pid )
-				entries[i].pid = -1;
+			if( entries[i].pid == pid ) {
+				entries[i].pid = 0;
+			}
 		}
 	}
 }
 
+#define VERSION "0.0"
+
+static const char *const def_envp[] = {
+	"PATH=/bin:/usr/bin:/sbin:/usr/sbin",
+	"INIT_VERSION=" VERSION,
+	"CONSOLE=/dev/console",
+};
+
+static const int def_envp_len = sizeof(def_envp)/sizeof(char *);
+
 static void execute_child(const char *cmdline)
 {
 	char **argv = split(cmdline, " ");
+	char **envp;
+	sigset_t sigset;
+	int con_fd;
+
+	sigfillset(&sigset);
+	sigprocmask(SIG_UNBLOCK, &sigset, NULL);
 
 	if( argv == NULL || argv[0] == NULL )
 		errx(EXIT_FAILURE, "no args for '%s'", cmdline);
 
-	if( execve(argv[0], argv, (char *[]){}) )
+	if( (envp = calloc(def_envp_len + 3, sizeof(char *))) == NULL )
+		err(EXIT_FAILURE, "cannot allocate envp for '%s'", cmdline);
+
+	for( int i = 0; i < def_envp_len; i++ )
+		envp[i] = strdup(def_envp[i]);
+
+	envp[def_envp_len] = strdup("RUNLEVEL=x");
+	envp[def_envp_len+1] = strdup("PREVLEVEL=x");
+
+	close(0);
+	close(1);
+	close(2);
+
+	if( (con_fd = open("/dev/console", O_RDWR|O_NOCTTY)) == -1 )
+		exit(EXIT_FAILURE);
+
+	if( dup(con_fd) == -1 || dup(con_fd) == -1 )
+		warn("dup in execute_child");
+
+	setsid();
+
+	if( execve(argv[0], argv, envp) )
 		err(EXIT_FAILURE, "unable to execv for '%s'", cmdline);
 }
 
@@ -404,39 +600,222 @@ static void run_wait(struct entry *ent)
 	execute_child(ent->process);
 }
 
+static inline void close_pipe(void)
+{
+	close(pipe_fd);
+	pipe_fd = -1;
+}
+
+static int check_pipe(void)
+{
+	struct stat st;
+
+	if( stat(PIPE_NAME, &st) == -1 && errno == ENOENT ) {
+		
+		if( pipe_fd != -1)
+			close_pipe();
+
+		if( mkfifo(PIPE_NAME, 0600) == -1 )
+			warn("mkfifo failed");
+	}
+
+	/* TODO check if inode has changed? */
+
+	if( pipe_fd == -1 )
+		if( (pipe_fd = open(PIPE_NAME, O_RDWR|O_NONBLOCK)) == -1 )
+			warn("unable to open initctl");
+
+	return pipe_fd;
+}
+
+static void change_run_level(const int old, const int new_level)
+{
+	const int sigs[] = { SIGTERM, SIGKILL };
+
+	syslog(LOG_NOTICE, "entering runlevel '%c'", run_level_id);
+
+	for( int sig = 0; sig < 2; sig++) {
+		for( int i = 0; i < num_entries; i++ )
+			if( entries[i].action == ACT_RESPAWN && !(entries[i].runlevels & old) && entries[i].pid != 0)
+				kill(entries[i].pid, sigs[sig]);
+		sleep(3);
+	}
+
+	/* TODO: 
+	 * make initctl work
+	 */
+
+	old_level = old;
+
+	run_level = new_level;
+	run_level_id = get_runlevel(run_level);
+
+	for( int i = 0; i < num_entries; i++ )
+		if( entries[i].action == ACT_ONCE && (entries[i].runlevels & run_level) )
+			run_nowait(&entries[i]);
+
+	for( int i = 0; i < num_entries; i++ )
+		if( entries[i].action == ACT_WAIT && (entries[i].runlevels & run_level) )
+			run_wait(&entries[i]);
+
+	for( int i = 0; i < num_entries; i++ )
+		if( entries[i].action == ACT_RESPAWN && (entries[i].runlevels & run_level) && entries[i].pid == 0 )
+			run_nowait(&entries[i]);
+}
+
+static void process_pipe(int fd)
+{
+	struct init_request req;
+	ssize_t len;
+
+	while(true)
+	{
+		len = read(fd, &req, sizeof(struct init_request));
+
+		if( len == 0 || (len == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) ) {
+			return;
+		} else if( len == -1 ) {
+			close_pipe();
+			return;
+		} else if( len != sizeof(struct init_request) ) {
+			warnx("invalid packet on initctl");
+		} else if( req.magic != INIT_REQ_MAGIC ) {
+			warnx("invalid magic on initctl");
+		} else {
+			switch(req.cmd)
+			{
+				case CMD_SET_RUNLVL:
+					/* FIXME: convert req.run_level !!! */
+					change_run_level(run_level, req.runlevel);
+					break;
+				default:
+					warnx("unknown or unsupported command '%d' on initctl", req.cmd);
+					break;
+			}
+		}
+	}
+}
+
+static void main_loop(void)
+{
+	fd_set read_set, ex_set;
+	struct timeval tv;
+
+	/* TODO:
+	 * process initctl
+	 */
+
+	while(true)
+	{
+		const int fd = check_pipe();
+
+		if( fd == -1 ) {
+			pause();
+		} else {
+			FD_SET(fd, &read_set);
+			FD_SET(fd, &ex_set);
+
+			tv = (struct timeval) {
+				.tv_sec  = 5,
+				.tv_usec = 0
+			};
+
+			const int ret = select(fd + 1, &read_set, NULL, &ex_set, &tv);
+
+			if( ret < 0 && errno != EINTR ) {
+				warn("select on initctl");
+				close_pipe();
+			} else if( ret > 1 ) {
+				if( FD_ISSET(fd, &ex_set) ) {
+					close_pipe();
+				} else if( FD_ISSET(fd, &read_set) ) {
+					process_pipe(fd);
+				}
+			}
+		}
+
+		for( int i = 0; i < num_entries; i++ )
+			if( !entries[i].pid && (entries[i].runlevels & run_level) && entries[i].action == ACT_RESPAWN )
+				run_nowait(&entries[i]);
+	} /* while(true) */
+}
+
+struct mount_ent {
+	const char *const source;
+	const char *const dest;
+	const char *const fstype;
+	const int flags;
+	const char *const data;
+};
+
+static const struct mount_ent mount_ents[] = {
+	{ "devtmpfs",	"/dev",		"devtmpfs",	MS_NOEXEC|MS_NOSUID|MS_RELATIME,			"gid=5,mode=620,ptmxmode=000" },
+	{ "sys",		"/sys",		"sysfs",	MS_NODEV|MS_NOEXEC|MS_NOSUID|MS_RELATIME,	NULL },
+	{ "proc",		"/proc",	"proc",		MS_NODEV|MS_NOEXEC|MS_NOSUID|MS_RELATIME,	NULL }
+};
+static int num_mount_ents = sizeof(mount_ents) / sizeof(struct mount_ent);
+
 /* public function definitions */
 
 int main(int argc, char *argv[])
 {
 	sigset_t set;
-	int status;
+	int con_fd;
+	//int status;
 	const pid_t my_pid = getpid();
+	const bool istty = isatty(fileno(stderr));
+	const int old_umask = umask(0);
+	struct stat sb;
+
+	openlog("init", LOG_CONS|LOG_PID|(istty ? LOG_PERROR : 0), LOG_DAEMON);
+	syslog(LOG_NOTICE, "init starting");
 
 	if( my_pid != 1 )
 		warnx("must be PID 1");
 
-	printf("DEBUG: checking options\n");
+	for( int i = 0; i < num_mount_ents; i++ )
+		if( !stat(mount_ents[i].dest, &sb) )
+			if( mount(mount_ents[i].source, mount_ents[i].dest, 
+					mount_ents[i].fstype, mount_ents[i].flags,
+					mount_ents[i].data) == -1 && errno != EBUSY )
+				warn("mount %s", mount_ents[i].dest);
+
+	close(0);
+	close(1);
+	close(2);
+
+	if( (con_fd = open("/dev/console", O_RDWR|O_NOCTTY)) == -1 )
+		warn("/dev/console");
+
+	if( dup(con_fd) == -1 || dup(con_fd) == -1 )
+		warn("dup in main");
+
+	setvbuf(stdin, NULL, _IONBF, 0);
+	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
+
+	chdir("/");
+
+
+	setsid();
 
 	parse_command_line(argc, argv);
-
-	printf(	"DEBUG: opt_auto=%d,opt_emerg=%d,opt_def_runlevel=%c,"
-			"opt_cfg_filename=%s\n",
-			opt_auto, opt_emerg,
-			opt_def_runlevel, opt_cfg_filename);
 
 	sigfillset(&set);
 	sigprocmask(SIG_BLOCK, &set, 0);
 
 	read_config();
 
-	run_level = opt_def_runlevel;
+	run_level_id = opt_def_runlevel;
+	run_level = get_runlevel(run_level_id);
 
 	if( run_level == -1 ) {
 		warnx("no runlevel specified on command line or inittab");
-		run_level = 's';
+		run_level_id = 's';
+		run_level = RUNLEVEL_S;
 	}
 
-	printf("DEBUG: run_level set to %c\n", run_level);
+	sigprocmask(SIG_UNBLOCK, &set, 0);
 
 	if( sigaction(SIGCHLD, &(const struct sigaction) {
 				.sa_handler = chld_handler,
@@ -444,19 +823,39 @@ int main(int argc, char *argv[])
 				}, NULL) )
 		err(EXIT_FAILURE, "failure on sigaction(SIGCHLD)");
 
-	exit(EXIT_SUCCESS);
+	if( sigaction(SIGHUP, &(const struct sigaction) { .sa_handler = sighup_handler}, NULL) )
+		err(EXIT_FAILURE, "failure on sigaction(SIGHUP)");
+	if( sigaction(SIGUSR1, &(const struct sigaction) { .sa_handler = sigusr1_handler}, NULL) )
+		err(EXIT_FAILURE, "failure on sigaction(SIGUSR1)");
+	if( sigaction(SIGUSR2, &(const struct sigaction) { .sa_handler = sigusr2_handler}, NULL) )
+		err(EXIT_FAILURE, "failure on sigaction(SIGUSR2)");
+	if( sigaction(SIGINT, &(const struct sigaction) { .sa_handler = sigint_handler}, NULL) )
+		err(EXIT_FAILURE, "failure on sigaction(SIGINT)");
+	if( sigaction(SIGWINCH, &(const struct sigaction) { .sa_handler = sigwinch_handler}, NULL) )
+		err(EXIT_FAILURE, "failure on sigaction(SIGWINCH)");
+	if( sigaction(SIGPWR, &(const struct sigaction) { .sa_handler = sigpwr_handler}, NULL) )
+		err(EXIT_FAILURE, "failure on sigaction(SIGPWR)");
 
-	printf("DEBUG: about to fork\n");
+	for( int i = 0; i < num_entries; i++ )
+		if( entries[i].action == ACT_SYSINIT )
+			run_wait(&entries[i]);
 
-	if( fork() ) 
-		while(true) wait(&status);
+	for( int i = 0; i < num_entries; i++ )
+		if( entries[i].action == ACT_BOOT )
+			run_nowait(&entries[i]);
 
-	sigprocmask(SIG_UNBLOCK, &set, 0);
+	for( int i = 0; i < num_entries; i++ )
+		if( entries[i].action == ACT_BOOTWAIT )
+			run_wait(&entries[i]);
 
-	setsid();
-	setpgid(0, 0);
+	change_run_level(0, run_level_id);
 
-	status = execve("/etc/rc", (char *[]){ "rc", 0 },(char *[]){ 0 });
-	warnx("unable to spawn rc");
-	return status;
+	main_loop();
+
+	//setsid();
+	//setpgid(0, 0);
+
+	//status = execve("/etc/rc", (char *[]){ "rc", 0 },(char *[]){ 0 });
+	//warnx("unable to spawn rc");
+	//return status;
 }
