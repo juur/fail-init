@@ -4,3 +4,9 @@ config.log
 config.status
 .d
 *.o
+*~
+bin
+init
+inittab
+root*
+initramfs*
