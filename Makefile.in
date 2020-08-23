@@ -17,8 +17,8 @@ TAR			:= tar
 RM			?= rm -f
 LFLAGS		:= @@LFLAGS@@
 CPPFLAGS	:= @@CPPFLAGS@@
-CFLAGS		:= @@CFLAGS@@ -g
-LDFLAGS 	:= -L$(srcdir)/src -L$(objdir) -L. @@LDFLAGS@@
+CFLAGS		:= @@CFLAGS@@ -g -static
+LDFLAGS 	:= -L$(srcdir)/src -L$(objdir) -L. -static @@LDFLAGS@@
 PKGCONFIG	:= pkg-config
 HELP2MAN	:= help2man
 
