@@ -23,6 +23,8 @@
 #include <syslog.h>
 #undef  __USE_MISC
 
+#include "config.h"
+
 /* enum definitions */
 
 enum actions {
@@ -75,6 +77,7 @@ struct entry {
 
 	pid_t	pid;
 	time_t	next_run;
+	int		con_type;
 };
 
 struct init_request {
@@ -95,7 +98,7 @@ struct init_request {
 
 struct act_name {
 	const char *name;
-	enum actions action;
+	const enum actions action;
 };
 
 /* private constant declarations */
@@ -127,6 +130,8 @@ static const char *const cfg_regex =
 
 static regex_t		cfg_regcomp;
 static regmatch_t	cfg_regmatch[6]; /* cfg_regex matches */
+
+static int old_mask;
 
 static int opt_auto			= 0;
 static int opt_emerg		= 0;
@@ -420,8 +425,13 @@ static void read_config(void)
 		memset(&entries[ent_id], 0, sizeof(struct entry));
 
 		entries[ent_id].id = id;
+		
 		for( int i = 0; runlevels[i]; i++ )
 			entries[ent_id].runlevels |= get_runlevel(runlevels[i]);
+		
+		if( entries[ent_id].runlevels & RUNLEVEL_S )
+			entries[ent_id].con_type = 1;
+
 		entries[ent_id].action = action;
 		entries[ent_id].process = process;
 		entries[ent_id].no_utmp = no_utmp;
@@ -466,6 +476,8 @@ static void parse_command_line(int argc, char *argv[])
 				break;
 		}
 	}
+
+	/* TODO: check for 'auto' and 'single' */
 
 	if( optind - argc > 1 ) {
 		warnx("invalid arguments passed");
@@ -540,8 +552,6 @@ static void chld_handler(int sig)
 	}
 }
 
-#define VERSION "0.0"
-
 static const char *const def_envp[] = {
 	"PATH=/bin:/usr/bin:/sbin:/usr/sbin",
 	"INIT_VERSION=" VERSION,
@@ -550,7 +560,7 @@ static const char *const def_envp[] = {
 
 static const int def_envp_len = sizeof(def_envp)/sizeof(char *);
 
-static void execute_child(const char *cmdline)
+static void execute_child(const char *const cmdline, const int con_type)
 {
 	char **argv = split(cmdline, " ");
 	char **envp;
@@ -576,7 +586,9 @@ static void execute_child(const char *cmdline)
 	close(1);
 	close(2);
 
-	if( (con_fd = open("/dev/console", O_RDWR|O_NOCTTY)) == -1 )
+	const char *con_name = con_type ? "/dev/null" : "/dev/console";
+
+	if( (con_fd = open(con_name, O_RDWR|O_NOCTTY)) == -1 )
 		exit(EXIT_FAILURE);
 
 	if( dup(con_fd) == -1 || dup(con_fd) == -1 )
@@ -584,9 +596,10 @@ static void execute_child(const char *cmdline)
 
 	setsid();
 
-	if( execve(argv[0], argv, envp) ) {
+	umask(old_mask);
+
+	if( execve(argv[0], argv, envp) )
 		err(EXIT_FAILURE, "unable to execv '%s' for '%s'", argv[0], cmdline);
-	}
 }
 
 static void run_nowait(struct entry *ent)
@@ -600,7 +613,7 @@ static void run_nowait(struct entry *ent)
 		return;
 	}
 
-	execute_child(ent->process);
+	execute_child(ent->process, ent->con_type);
 }
 
 static void run_wait(struct entry *ent)
@@ -618,7 +631,7 @@ static void run_wait(struct entry *ent)
 		return;
 	}
 
-	execute_child(ent->process);
+	execute_child(ent->process, ent->con_type);
 }
 
 static inline void close_pipe(void)
@@ -788,15 +801,16 @@ static int num_mount_ents = sizeof(mount_ents) / sizeof(struct mount_ent);
 
 /* public function definitions */
 
-int main(int argc, char *argv[])
+int main(int argc, char *argv[], char *envp[])
 {
 	sigset_t set, all_block;
 	int con_fd;
 	//int status;
 	const pid_t my_pid = getpid();
 	//const bool istty = isatty(fileno(stderr));
-	const int old_umask = umask(0);
 	struct stat sb;
+
+	old_mask = umask(0);
 
 	openlog("init", LOG_CONS|LOG_PID, LOG_DAEMON);
 	syslog(LOG_NOTICE, "init starting");
@@ -814,9 +828,10 @@ int main(int argc, char *argv[])
 					mount_ents[i].data) == -1 && errno != EBUSY )
 				warn("mount %s", mount_ents[i].dest);
 
-	if( (con_fd = open("/dev/tty", O_RDWR|O_NOCTTY)) == -1 )
-		warn("unable to open /dev/tty");
-	else
+	for( int i = 0; envp[i]; i++ )
+		printf(" %s\n", envp[i]);
+	
+	if( (con_fd = open("/dev/tty", O_RDWR|O_NOCTTY)) != -1 )
 		ioctl(con_fd, TIOCNOTTY);
 
 	if( setsid() == -1 )
@@ -826,8 +841,8 @@ int main(int argc, char *argv[])
 	close(1);
 	close(2);
 
-	if( (con_fd = open("/dev/console", O_RDWR|O_NOCTTY)) == -1 )
-		warn("/dev/console");
+	if( (con_fd = open("/dev/null", O_RDWR|O_NOCTTY)) == -1 )
+		warn("/dev/null");
 
 	if( dup(con_fd) == -1 || dup(con_fd) == -1 )
 		warn("dup in main");
@@ -894,11 +909,4 @@ int main(int argc, char *argv[])
 	change_run_level(0, run_level_id);
 
 	main_loop();
-
-	//setsid();
-	//setpgid(0, 0);
-
-	//status = execve("/etc/rc", (char *[]){ "rc", 0 },(char *[]){ 0 });
-	//warnx("unable to spawn rc");
-	//return status;
 }
