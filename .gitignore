@@ -13,3 +13,5 @@ initramfs*
 init.d
 bzImage
 *.iso
+*.gz
+*.tar.*
