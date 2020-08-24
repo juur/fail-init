@@ -77,6 +77,7 @@ struct entry {
 
 	pid_t	pid;
 	time_t	next_run;
+	time_t	last_run;
 	int		con_type;
 };
 
@@ -151,6 +152,7 @@ static const int cfg_regnmatch		= sizeof(cfg_regmatch) / sizeof(regmatch_t);
 
 /* private function defintions */
 
+__attribute__ ((__noreturn__, __format__ (__printf__, 2, 3)))
 static void errx(int eval, const char *const fmt, ...)
 {
 	va_list ap;
@@ -162,6 +164,7 @@ static void errx(int eval, const char *const fmt, ...)
 	exit(eval);
 }
 
+__attribute__ ((__noreturn__, __format__ (__printf__, 2, 3)))
 static void err(int eval, const char *const fmt, ...)
 {
 	const int save_err = errno;
@@ -235,6 +238,7 @@ static int get_runlevel(const char c)
 	return -1;
 }
 
+__attribute__((__nonnull__))
 static enum actions string_to_action(const char *const str)
 {
 	for( int i = 0; act_names[i].name; i++ )
@@ -252,6 +256,7 @@ static bool is_valid_runlevel(const char c)
 	return false;
 }
 
+__attribute__((__nonnull__))
 static void trim(char *str)
 {
 	for( char *ptr = str + strlen(str) - 1; 
@@ -301,7 +306,6 @@ split_err3:
 	for( int i = 0; i < retlen; i++ ) {
 		if( ret[i] ) free(ret[i]);
 	}
-	free(ret);
 	free(str);
 
 split_err1:
@@ -310,6 +314,7 @@ split_err1:
 split_err0:
 	return NULL;
 }
+
 
 static void read_config(void)
 {
@@ -359,23 +364,38 @@ static void read_config(void)
 			continue;
 		}
 
-		if (cfg_regmatch[1].rm_so != -1)
+		if( cfg_regmatch[1].rm_so != -1)
 			id = strndup(buf + cfg_regmatch[1].rm_so,
 					cfg_regmatch[1].rm_eo - cfg_regmatch[1].rm_so);
 
-		if (cfg_regmatch[2].rm_so != -1)
+		if( cfg_regmatch[2].rm_so != -1)
 			runlevels = strndup(buf + cfg_regmatch[2].rm_so,
 					cfg_regmatch[2].rm_eo - cfg_regmatch[2].rm_so);
 
-		if (cfg_regmatch[3].rm_so != -1)
+		if( runlevels == NULL ) {
+			warn("strndup failed in read_config");
+			goto parse_skip;
+		}
+
+		if( cfg_regmatch[3].rm_so != -1)
 			action_name = strndup(buf + cfg_regmatch[3].rm_so,
 					cfg_regmatch[3].rm_eo - cfg_regmatch[3].rm_so);
 
+		if( action_name == NULL) {
+			warn("strndup failed in read_config");
+			goto parse_skip;
+		}
+
 		no_utmp = (cfg_regmatch[4].rm_so != -1);
 
-		if (cfg_regmatch[5].rm_so != -1)
+		if( cfg_regmatch[5].rm_so != -1)
 			process = strndup(buf + cfg_regmatch[5].rm_so,
 					cfg_regmatch[5].rm_eo - cfg_regmatch[5].rm_so);
+
+		if( process == NULL ) {
+			warn("strndup failed in read_config");
+			goto parse_skip;
+		}
 
 		trim(process);
 
@@ -436,6 +456,8 @@ static void read_config(void)
 		entries[ent_id].process = process;
 		entries[ent_id].no_utmp = no_utmp;
 
+		free(runlevels);
+		free(action_name);
 		continue;
 
 parse_skip:
@@ -446,6 +468,19 @@ parse_skip:
 		continue;
 	}
 
+	regfree(&cfg_regcomp);
+	fclose(cfg);
+}
+
+static void clean_config(void)
+{
+	for( int i = 0; i < num_entries; i++)
+	{
+		free((char *)entries[i].id);
+		free((char *)entries[i].process);
+	}
+
+	free(entries);
 }
 
 static void parse_command_line(int argc, char *argv[])
@@ -560,6 +595,9 @@ static const char *const def_envp[] = {
 
 static const int def_envp_len = sizeof(def_envp)/sizeof(char *);
 
+/* as this function executes within the child process, we can be more lazy
+ * with memory allocation etc. */
+__attribute__ ((__noreturn__))
 static void execute_child(const char *const cmdline, const int con_type)
 {
 	char **argv = split(cmdline, " ");
@@ -587,19 +625,20 @@ static void execute_child(const char *const cmdline, const int con_type)
 	close(2);
 
 	const char *con_name = con_type ? "/dev/null" : "/dev/console";
+	umask(old_mask);
 
 	if( (con_fd = open(con_name, O_RDWR|O_NOCTTY)) == -1 )
-		exit(EXIT_FAILURE);
+		err(EXIT_FAILURE, "unable to open console for '%s'", argv[0]);
 
 	if( dup(con_fd) == -1 || dup(con_fd) == -1 )
-		warn("dup in execute_child");
+		warn("dup in execute_child for '%s'", argv[0]);
 
 	setsid();
 
-	umask(old_mask);
-
 	if( execve(argv[0], argv, envp) )
 		err(EXIT_FAILURE, "unable to execv '%s' for '%s'", argv[0], cmdline);
+
+	exit(EXIT_SUCCESS);
 }
 
 static void run_nowait(struct entry *ent)
@@ -608,6 +647,9 @@ static void run_nowait(struct entry *ent)
 
 	if( ent->next_run && ent->next_run > time(NULL) )
 		return;
+
+	ent->next_run = 0;
+	ent->last_run = time(NULL);
 
 	if( (ent->pid = child_pid = fork()) ) {
 		return;
@@ -624,6 +666,9 @@ static void run_wait(struct entry *ent)
 
 	if( ent->next_run && ent->next_run > (t = time(NULL)) )
 		sleep(ent->next_run - t);
+
+	ent->next_run = 0;
+	ent->last_run = time(NULL);
 
 	if( (ent->pid = child_pid = fork()) ) {
 		waitpid(child_pid, &wstatus, 0);
@@ -862,6 +907,7 @@ int main(int argc, char *argv[], char *envp[])
 	sigprocmask(SIG_BLOCK, &all_block, 0);
 
 	read_config();
+	atexit(clean_config);
 
 	run_level_id = opt_def_runlevel;
 	run_level = get_runlevel(run_level_id);
