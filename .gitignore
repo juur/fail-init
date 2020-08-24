@@ -11,3 +11,5 @@ inittab
 root*
 initramfs*
 init.d
+bzImage
+*.iso

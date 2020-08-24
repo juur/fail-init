@@ -16,6 +16,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/mount.h>
+#include <time.h>
 #include <unistd.h>
 
 #define __USE_MISC
@@ -73,6 +74,7 @@ struct entry {
 	bool	no_utmp;
 
 	pid_t	pid;
+	time_t	next_run;
 };
 
 struct init_request {
@@ -261,7 +263,7 @@ static char **split(const char *text, const char *delim)
 	while( (tmp = strstr(tmp+1, delim)) != NULL ) 
 		count++;
 
-	retlen = count + 1;
+	retlen = count + 2;
 
 	if( (ret = calloc(retlen, sizeof(char *))) == NULL) {
 		warn("unable to process '%s'", text);
@@ -512,16 +514,27 @@ static void chld_handler(int sig)
 	int wstatus;
 	pid_t pid;
 
+	syslog(LOG_INFO, "child handler invoked");
+
 	while( (pid = waitpid(-1, &wstatus, WNOHANG)) != 0 )
 	{
-		if( errno == ECHILD )
+		if( pid == -1 && errno == ECHILD )
 			break;
+		else if( pid == -1 ) {
+			warn("chld_handler: waitpid");
+			continue;
+		}
 
-		printf("DEBUG: chld_handler on %d\n", pid);
+		syslog(LOG_INFO, "child handler checking PID %d exited=%d rc=%d", pid,
+				WIFEXITED(wstatus), WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : 0);
 
 		for( int i = 0; i < num_entries; i++ ) {
 			if( entries[i].pid == pid ) {
 				entries[i].pid = 0;
+				if( !WIFEXITED(wstatus) || WEXITSTATUS(wstatus) )
+					entries[i].next_run = time(NULL) + 2;
+				else
+					entries[i].next_run = 0;
 			}
 		}
 	}
@@ -550,7 +563,7 @@ static void execute_child(const char *cmdline)
 	if( argv == NULL || argv[0] == NULL )
 		errx(EXIT_FAILURE, "no args for '%s'", cmdline);
 
-	if( (envp = calloc(def_envp_len + 3, sizeof(char *))) == NULL )
+	if( (envp = calloc(def_envp_len + 4, sizeof(char *))) == NULL )
 		err(EXIT_FAILURE, "cannot allocate envp for '%s'", cmdline);
 
 	for( int i = 0; i < def_envp_len; i++ )
@@ -571,13 +584,17 @@ static void execute_child(const char *cmdline)
 
 	setsid();
 
-	if( execve(argv[0], argv, envp) )
-		err(EXIT_FAILURE, "unable to execv for '%s'", cmdline);
+	if( execve(argv[0], argv, envp) ) {
+		err(EXIT_FAILURE, "unable to execv '%s' for '%s'", argv[0], cmdline);
+	}
 }
 
 static void run_nowait(struct entry *ent)
 {
 	pid_t child_pid;
+
+	if( ent->next_run && ent->next_run > time(NULL) )
+		return;
 
 	if( (ent->pid = child_pid = fork()) ) {
 		return;
@@ -590,6 +607,10 @@ static void run_wait(struct entry *ent)
 {
 	pid_t child_pid;
 	int wstatus;
+	time_t t;
+
+	if( ent->next_run && ent->next_run > (t = time(NULL)) )
+		sleep(ent->next_run - t);
 
 	if( (ent->pid = child_pid = fork()) ) {
 		waitpid(child_pid, &wstatus, 0);
@@ -661,6 +682,14 @@ static void change_run_level(const int old, const int new_level)
 	for( int i = 0; i < num_entries; i++ )
 		if( entries[i].action == ACT_RESPAWN && (entries[i].runlevels & run_level) && entries[i].pid == 0 )
 			run_nowait(&entries[i]);
+
+	if( new_level == 's' ) {
+		for( int i = 0; i < num_entries; i++ )
+			if( (entries[i].runlevels & RUNLEVEL_S) ) {
+				run_wait(&entries[i]);
+				break;
+			}
+	}
 }
 
 static void process_pipe(int fd)
@@ -710,8 +739,9 @@ static void main_loop(void)
 		const int fd = check_pipe();
 
 		if( fd == -1 ) {
-			pause();
+			sleep(10);
 		} else {
+
 			FD_SET(fd, &read_set);
 			FD_SET(fd, &ex_set);
 
@@ -732,7 +762,8 @@ static void main_loop(void)
 					process_pipe(fd);
 				}
 			}
-		}
+
+		} /* if( fd == -1 ) */
 
 		for( int i = 0; i < num_entries; i++ )
 			if( !entries[i].pid && (entries[i].runlevels & run_level) && entries[i].action == ACT_RESPAWN )
@@ -759,16 +790,19 @@ static int num_mount_ents = sizeof(mount_ents) / sizeof(struct mount_ent);
 
 int main(int argc, char *argv[])
 {
-	sigset_t set;
+	sigset_t set, all_block;
 	int con_fd;
 	//int status;
 	const pid_t my_pid = getpid();
-	const bool istty = isatty(fileno(stderr));
+	//const bool istty = isatty(fileno(stderr));
 	const int old_umask = umask(0);
 	struct stat sb;
 
-	openlog("init", LOG_CONS|LOG_PID|(istty ? LOG_PERROR : 0), LOG_DAEMON);
+	openlog("init", LOG_CONS|LOG_PID, LOG_DAEMON);
 	syslog(LOG_NOTICE, "init starting");
+
+	if( getuid() != 0 || geteuid() != 0 )
+		warnx("must be ran as root");
 
 	if( my_pid != 1 )
 		warnx("must be PID 1");
@@ -779,6 +813,14 @@ int main(int argc, char *argv[])
 					mount_ents[i].fstype, mount_ents[i].flags,
 					mount_ents[i].data) == -1 && errno != EBUSY )
 				warn("mount %s", mount_ents[i].dest);
+
+	if( (con_fd = open("/dev/tty", O_RDWR|O_NOCTTY)) == -1 )
+		warn("unable to open /dev/tty");
+	else
+		ioctl(con_fd, TIOCNOTTY);
+
+	if( setsid() == -1 )
+		warn("unable to setsid()");
 
 	close(0);
 	close(1);
@@ -794,15 +836,15 @@ int main(int argc, char *argv[])
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
-	chdir("/");
-
-
-	setsid();
+	if( chdir("/") == -1 )
+		warn("unable to chdir to /");
 
 	parse_command_line(argc, argv);
 
 	sigfillset(&set);
+	sigfillset(&all_block);
 	sigprocmask(SIG_BLOCK, &set, 0);
+	sigprocmask(SIG_BLOCK, &all_block, 0);
 
 	read_config();
 
@@ -815,13 +857,14 @@ int main(int argc, char *argv[])
 		run_level = RUNLEVEL_S;
 	}
 
-	sigprocmask(SIG_UNBLOCK, &set, 0);
-
 	if( sigaction(SIGCHLD, &(const struct sigaction) {
 				.sa_handler = chld_handler,
-				.sa_flags = SA_NOCLDSTOP
+				.sa_flags = SA_NOCLDSTOP,
+				.sa_mask = all_block
 				}, NULL) )
 		err(EXIT_FAILURE, "failure on sigaction(SIGCHLD)");
+
+	sigprocmask(SIG_UNBLOCK, &set, 0);
 
 	if( sigaction(SIGHUP, &(const struct sigaction) { .sa_handler = sighup_handler}, NULL) )
 		err(EXIT_FAILURE, "failure on sigaction(SIGHUP)");
