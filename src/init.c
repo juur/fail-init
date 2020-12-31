@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -127,10 +128,27 @@ static const struct act_name act_names[] = {
 static const char *const cfg_regex = 
 	"^(.{1,4}):([a-zA-Z0-9]*):([a-z]+):([+]?)(.*)$";
 
-/* private variables */
+static const char *const def_envp[] = {
+	"PATH=/bin:/usr/bin:/sbin:/usr/sbin",
+	"INIT_VERSION=" VERSION,
+	"CONSOLE=/dev/console",
+	NULL
+};
+static const int def_envp_len = sizeof(def_envp)/sizeof(char *);
 
-static regex_t		cfg_regcomp;
+static const char *opt_cfg_filename	= SYSCONFDIR "/inittab";
+static const char *const powerstatus_name = SYSCONFDIR "/powerstatus";
+
 static regmatch_t	cfg_regmatch[6]; /* cfg_regex matches */
+static const int	cfg_regnmatch = sizeof(cfg_regmatch) / sizeof(regmatch_t);
+
+/* declartions of externally defined variables */
+
+extern char **environ;
+
+/* private variables (and default values) */
+
+static regex_t cfg_regcomp;
 
 static int old_mask;
 
@@ -140,17 +158,43 @@ static int opt_def_runlevel = -1;
 
 static int pipe_fd			= -1;
 
-static char run_level_id		= '\0';
-static long run_level			= -1;
-static long old_level			= -1;
+static char run_level_id	= '\0';
+static long run_level		= -1;
+static char old_level_id	= '\0';
+static long old_level		= -1;
 
 static struct entry *entries	= NULL;
 static int num_entries			= 0;
 
-static const char *opt_cfg_filename	= "/etc/inittab";
-static const int cfg_regnmatch		= sizeof(cfg_regmatch) / sizeof(regmatch_t);
 
 /* private function defintions */
+
+static void show_usage(void)
+{
+	fprintf(stderr, 
+			"Usage: init [OPTION]... [RUNLEVEL]\n"
+			"\n"
+			"Some options may use a word as RUNLEVEL, these are shown alongside the option\n"
+			"  -s, S, single    Boot into single user mode.\n"
+			"      1-5          Boot into the specified runlevel.\n"
+			"  -b, emergency    Boot directly into a single user shell.\n"
+			"  -a, auto         Sets AUTOBOOT environmental variable to 'yes'.\n"
+			"  -z TEXT          Ignored\n"
+			"  -h               Display this help text\n"
+			"  -V               Display the version number\n"
+			"\n");
+}
+
+static void show_version(void)
+{
+	printf(
+			"init (" VERSION ")\n"
+			"\n"
+			"Copyright (C) 2020+ Ian Kirk\n"
+			"This software comes without warranty of any kind\n"
+		  );
+
+}
 
 __attribute__ ((__noreturn__, __format__ (__printf__, 2, 3)))
 static void errx(int eval, const char *const fmt, ...)
@@ -191,7 +235,7 @@ static void err(int eval, const char *const fmt, ...)
 	exit(eval);
 }
 
-
+__attribute__ ((__format__ (__printf__, 1, 2)))
 static void warn(const char *const fmt, ...)
 {
 	int save_err = errno;
@@ -213,10 +257,10 @@ static void warn(const char *const fmt, ...)
 	va_end(ap);
 
 	syslog(LOG_WARNING, "%s: %s", newfmt, strerror(save_err));
-
 	free(newfmt);
 }
 
+__attribute__ ((__format__ (__printf__, 1, 2)))
 static void warnx(const char *const fmt, ...)
 {
 	va_list ap;
@@ -263,6 +307,7 @@ static void trim(char *str)
 			ptr >= str && isspace(*ptr); *(ptr--) = '\0' ) ;
 }
 
+__attribute__((__nonnull__))
 static char **split(const char *text, const char *delim)
 {
 	int count = 0, retlen;
@@ -422,8 +467,9 @@ static void read_config(void)
 		switch( action )
 		{
 			case ACT_INITDEFAULT:
-				/* TODO: check runlevels is an integer */
-				if (opt_def_runlevel == -1)
+				if( !isdigit(*runlevels) && *runlevels != 's' )
+					warnx("invalid initdefault level '%c'", *runlevels);
+				else if( opt_def_runlevel == -1)
 					opt_def_runlevel = *runlevels;
 				skip = true;
 				break;
@@ -483,11 +529,12 @@ static void clean_config(void)
 	free(entries);
 }
 
+__attribute__((__nonnull__))
 static void parse_command_line(int argc, char *argv[])
 {
 	char opt;
 
-	while( (opt = getopt(argc, argv, "absz:f:")) != -1)
+	while( (opt = getopt(argc, argv, "abshVz:f:")) != -1)
 	{
 		switch( opt )
 		{
@@ -506,6 +553,12 @@ static void parse_command_line(int argc, char *argv[])
 				break;
 			case 'z':
 				break;
+			case 'h':
+				show_usage();
+				exit(EXIT_SUCCESS);
+			case 'V':
+				show_version();
+				exit(EXIT_SUCCESS);
 			default:
 				warnx("unknown command line option '%c'", opt);
 				break;
@@ -517,11 +570,17 @@ static void parse_command_line(int argc, char *argv[])
 	if( optind - argc > 1 ) {
 		warnx("invalid arguments passed");
 	} else if( argc - optind == 1) {
-		const char rl = *argv[argc-1];
-		if( is_valid_runlevel(rl) )
-			opt_def_runlevel = rl;
-		else
-			warnx("invalid runlevel '%c' as argument", rl);
+		if( !strcasecmp("single", argv[argc-1]) ) {
+			opt_def_runlevel = 's';
+		} else if( !strcasecmp("auto", argv[argc-1]) ) {
+			opt_auto = 1;
+		} else {
+			const char rl = *argv[argc-1];
+			if( is_valid_runlevel(rl) )
+				opt_def_runlevel = rl;
+			else
+				warnx("invalid runlevel '%c' as argument", rl);
+		}
 	}
 }
 
@@ -553,7 +612,30 @@ static void sigwinch_handler(int sig)
 
 static void sigpwr_handler(int sig)
 {
+	int fd;
+	char pwr_status = 'F';
+
 	syslog(LOG_NOTICE, "received SIGPWR");
+
+	if( (fd = open(powerstatus_name, O_RDONLY|O_NOCTTY)) == -1 ) {
+		warn("unable to open %s", powerstatus_name);
+	} else if( read(fd, &pwr_status, 1) == -1 ) {
+		warn("unable to read %s", powerstatus_name);
+	}
+
+	if( fd != -1 )
+		close(fd);
+
+	/* TODO how to signal from within a signal? */
+	switch(pwr_status)
+	{
+		case 'O':
+			break;
+		case 'L':
+			break;
+		default:
+			break;
+	}
 }
 
 static void chld_handler(int sig)
@@ -587,14 +669,6 @@ static void chld_handler(int sig)
 	}
 }
 
-static const char *const def_envp[] = {
-	"PATH=/bin:/usr/bin:/sbin:/usr/sbin",
-	"INIT_VERSION=" VERSION,
-	"CONSOLE=/dev/console",
-};
-
-static const int def_envp_len = sizeof(def_envp)/sizeof(char *);
-
 /* as this function executes within the child process, we can be more lazy
  * with memory allocation etc. */
 __attribute__ ((__noreturn__))
@@ -618,7 +692,12 @@ static void execute_child(const char *const cmdline, const int con_type)
 		envp[i] = strdup(def_envp[i]);
 
 	envp[def_envp_len] = strdup("RUNLEVEL=x");
-	envp[def_envp_len+1] = strdup("PREVLEVEL=x");
+	envp[def_envp_len][strlen(envp[def_envp_len])-1] = run_level_id;
+
+	if( old_level != -1 ) {
+		envp[def_envp_len+1] = strdup("PREVLEVEL=x");
+		envp[def_envp_len+1][strlen(envp[def_envp_len+1])-1] = old_level_id;
+	}
 
 	close(0);
 	close(1);
@@ -725,6 +804,7 @@ static void change_run_level(const int old, const int new_level)
 	 */
 
 	old_level = old;
+	old_level_id = get_runlevel(old_level);
 
 	run_level = new_level;
 	run_level_id = get_runlevel(run_level);
@@ -850,10 +930,10 @@ int main(int argc, char *argv[], char *envp[])
 {
 	sigset_t set, all_block;
 	int con_fd;
-	//int status;
 	const pid_t my_pid = getpid();
-	//const bool istty = isatty(fileno(stderr));
 	struct stat sb;
+
+	parse_command_line(argc, argv);
 
 	old_mask = umask(0);
 
@@ -899,7 +979,6 @@ int main(int argc, char *argv[], char *envp[])
 	if( chdir("/") == -1 )
 		warn("unable to chdir to /");
 
-	parse_command_line(argc, argv);
 
 	sigfillset(&set);
 	sigfillset(&all_block);

@@ -38,6 +38,7 @@ infodir     := @@INFODIR@@
 libdir      := @@LIBDIR@@
 mandir      := @@MANDIR@@
 localedir   := @@LOCALEDIR@@
+sysconfdir  := @@SYSCONFDIR@@
 
 PACKAGE		:= $(shell $(CAT) "$(srcdir)/misc/PACKAGE")
 VERSION		:= $(shell $(CAT) "$(srcdir)/misc/VERSION")

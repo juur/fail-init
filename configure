@@ -102,22 +102,22 @@ fi
 
 # Default file locations, or use env provided ones
 
-BINDIR=${BINDIR:-\$(exec_prefix)/bin}
-DATADIR=${DATADIR:-\$(datarootdir)}
-DATAROOTDIR=${DATAROOTDIR:-\$(prefix)/share}
-DOCDIR=${DOCDIR:-\$(datarootdir)/doc}
-EXECPREFIX=${EXECPREFIX:-\$(prefix)}
-INCLUDEDIR=${INCLUDEDIR:-\$(prefix)/include}
-INFODIR=${INFODIR:-\$(datarootdir)/info}
-LIBDIR=${LIBDIR:-\$(prefix)/lib}
-LIBEXECDIR=${LIBEXECDIR:-\$(exec_prefix)/libexec}
-LOCALEDIR=${LOCALEDIR:-\$(datarootdir)/locale}
-LOCALSTATEDIR=${LOCALSTATEDIR:-\$(prefix)/var}
-MANDIR=${MANDIR:-\$(datarootdir)/man}
 PREFIX=${PREFIX:-/usr/local}
-SBINDIR=${SBINDIR:-\$(exec_prefix)/sbin}
-SHAREDSTATEDIR=${SHAREDSTATEDIR:-\$(prefix)/var/lib}
-SYSCONFDIR=${SYSCONFDIR:-\$(prefix)/etc}
+EXECPREFIX=${EXECPREFIX:-${PREFIX}}
+DATAROOTDIR=${DATAROOTDIR:-${PREFIX}/share}
+BINDIR=${BINDIR:-${EXECPREFIX}/bin}
+DATADIR=${DATADIR:-${DATAROOTDIR}}
+DOCDIR=${DOCDIR:-${DATAROOTDIR}/doc}
+INCLUDEDIR=${INCLUDEDIR:-${PREFIX}/include}
+INFODIR=${INFODIR:-${DATAROOTDIR}/info}
+LIBDIR=${LIBDIR:-${PREFIX}/lib}
+LIBEXECDIR=${LIBEXECDIR:-${EXECPREFIX}/libexec}
+LOCALEDIR=${LOCALEDIR:-${DATAROOTDIR}/locale}
+LOCALSTATEDIR=${LOCALSTATEDIR:-${PREFIX}/var}
+MANDIR=${MANDIR:-${DATAROOTDIR}/man}
+SBINDIR=${SBINDIR:-${EXECPREFIX}/sbin}
+SHAREDSTATEDIR=${SHAREDSTATEDIR:-${PREFIX}/var/lib}
+SYSCONFDIR=${SYSCONFDIR:-${PREFIX}/etc}
 TARGET=${TARGET:-}
 
 [[ "${PREFIX}" = "/" ]] && PREFIX=""
@@ -354,6 +354,9 @@ if [[ "${LEX}" ]]; then
 	echo -n "Checking $(basename ${LEX}) works ... "
 	check_lex 2>>config.log && echo "ok" || fail "provided LEX not functioning"
 fi
+
+# Finish config.h
+echo "#define SYSCONFDIR \"${SYSCONFDIR}\"" >> ${OBJDIR}/config.h
 
 # Create Makefile from template
 
