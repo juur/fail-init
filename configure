@@ -125,7 +125,7 @@ TARGET=${TARGET:-}
 
 # Default compiler flags
 
-CFLAGS=${CFLAGS:--O -std=c99 -pipe -Wall -Wextra -Wno-unused-parameter \
+CFLAGS=${CFLAGS:--O -std=c99 -pipe -Wall -pedantic -Wextra -Wno-unused-parameter \
 	-Wno-unused-function -Wno-sign-compare -D_FORTIFY_SOURCE=2 \
 	-fstack-protector}
 CPPFLAGS=${CPPFLAGS:--D_XOPEN_SOURCE=700}
