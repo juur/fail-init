@@ -607,7 +607,7 @@ static void sigint_handler(int sig)
 
 static void sigwinch_handler(int sig)
 {
-	syslog(LOG_NOTICE, "received SIGWINCH, KeyboarSignal pressed");
+	syslog(LOG_NOTICE, "received SIGWINCH, KeyboardSignal pressed");
 }
 
 static void sigpwr_handler(int sig)
