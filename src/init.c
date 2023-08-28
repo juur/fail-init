@@ -19,6 +19,8 @@
 #include <sys/mount.h>
 #include <time.h>
 #include <unistd.h>
+#include <termios.h>
+#include <sys/ioctl.h>
 
 #define __USE_MISC
 #include <syslog.h>
@@ -68,9 +70,9 @@ enum actions {
 /* structure and type defintions (and tightly coupled defines) */
 
 struct entry {
-	const char *	id;
-	const char *	process;
-	enum actions	action;
+	const char   *id;
+	const char   *process;
+	enum actions  action;
 
 	long	runlevels;
 	bool	wait;
@@ -126,7 +128,8 @@ static const struct act_name act_names[] = {
 };
 
 static const char *const cfg_regex = 
-	"^(.{1,4}):([a-zA-Z0-9]*):([a-z]+):([+]?)(.*)$";
+//	"^(.{1,4}):([a-zA-Z0-9]*):([a-z]+):([+]?)(.*)$";
+	"(.+):(.*):(.+):(\\+?)(.*)";
 
 static const char *const def_envp[] = {
 	"PATH=/bin:/usr/bin:/sbin:/usr/sbin",
@@ -136,7 +139,7 @@ static const char *const def_envp[] = {
 };
 static const int def_envp_len = sizeof(def_envp)/sizeof(char *);
 
-static const char *opt_cfg_filename	= SYSCONFDIR "/inittab";
+static const char *opt_cfg_filename	      = SYSCONFDIR "/inittab";
 static const char *const powerstatus_name = SYSCONFDIR "/powerstatus";
 
 static regmatch_t	cfg_regmatch[6]; /* cfg_regex matches */
@@ -196,7 +199,7 @@ static void show_version(void)
 
 }
 
-__attribute__ ((__noreturn__, __format__ (__printf__, 2, 3)))
+__attribute__ ((noreturn, format (__printf__, 2, 3)))
 static void errx(int eval, const char *const fmt, ...)
 {
 	va_list ap;
@@ -208,7 +211,7 @@ static void errx(int eval, const char *const fmt, ...)
 	exit(eval);
 }
 
-__attribute__ ((__noreturn__, __format__ (__printf__, 2, 3)))
+__attribute__ ((noreturn, format (__printf__, 2, 3)))
 static void err(int eval, const char *const fmt, ...)
 {
 	const int save_err = errno;
@@ -220,7 +223,7 @@ static void err(int eval, const char *const fmt, ...)
 
 	char *newfmt = malloc(len + 1);
 
-	if( !newfmt ) {
+	if ( !newfmt ) {
 		perror("init: err");
 		errx(EXIT_FAILURE, "unable to malloc within err");
 	}
@@ -235,8 +238,8 @@ static void err(int eval, const char *const fmt, ...)
 	exit(eval);
 }
 
-__attribute__ ((__format__ (__printf__, 1, 2)))
-static void warn(const char *const fmt, ...)
+__attribute__ ((format (__printf__, 1, 2)))
+static void warn(const char *fmt, ...)
 {
 	int save_err = errno;
 	va_list ap;
@@ -247,46 +250,46 @@ static void warn(const char *const fmt, ...)
 
 	char *newfmt = malloc(len + 1);
 
-	if( !newfmt ) {
+	if ( !newfmt ) {
 		perror("init: warn");
 		errx(EXIT_FAILURE, "unable to malloc within warn");
 	}
 
 	va_start(ap, fmt);
-	vsnprintf(newfmt, len + 1, fmt, ap);
+	vsnprintf(newfmt, len, fmt, ap);
 	va_end(ap);
 
 	syslog(LOG_WARNING, "%s: %s", newfmt, strerror(save_err));
 	free(newfmt);
 }
 
-__attribute__ ((__format__ (__printf__, 1, 2)))
+__attribute__ ((format (__printf__, 1, 2)))
 static void warnx(const char *const fmt, ...)
 {
 	va_list ap;
 	
 	va_start(ap, fmt);
-	vsyslog(LOG_ERR, fmt, ap);
+	vsyslog(LOG_WARNING, fmt, ap);
 	va_end(ap);
 }
 
-
+__attribute__ ((pure))
 static int get_runlevel(const char c)
 {
-	if( c >= '0' && c <= '9' )
+	if ( c >= '0' && c <= '9' )
 		return (1 << (c - '0'));
-	else if( c == 's')
+	else if ( c == 's')
 		return RUNLEVEL_S;
-	else if( c >= 'a' && c <= 'c' )
+	else if ( c >= 'a' && c <= 'c' )
 		return (1 << (11 - (c - 'a')));
 	return -1;
 }
 
-__attribute__((__nonnull__))
+__attribute__ ((nonnull))
 static enum actions string_to_action(const char *const str)
 {
-	for( int i = 0; act_names[i].name; i++ )
-		if( !strcmp(str, act_names[i].name) )
+	for ( int i = 0; act_names[i].name; i++ )
+		if ( !strcmp(str, act_names[i].name) )
 			return act_names[i].action;
 
 	return -1;	
@@ -294,20 +297,20 @@ static enum actions string_to_action(const char *const str)
 
 static bool is_valid_runlevel(const char c)
 {
-	if( (c >= '0' && c <= '9') || 
+	if ( (c >= '0' && c <= '9') || 
 			c == 's' || 
 			(c >= 'a' && c <= 'c')) return true;
 	return false;
 }
 
-__attribute__((__nonnull__))
+__attribute__ ((nonnull))
 static void trim(char *str)
 {
-	for( char *ptr = str + strlen(str) - 1; 
+	for ( char *ptr = str + strlen(str) - 1; 
 			ptr >= str && isspace(*ptr); *(ptr--) = '\0' ) ;
 }
 
-__attribute__((__nonnull__))
+__attribute__ ((nonnull))
 static char **split(const char *text, const char *delim)
 {
 	int count = 0, retlen;
@@ -320,12 +323,12 @@ static char **split(const char *text, const char *delim)
 
 	retlen = count + 2;
 
-	if( (ret = calloc(retlen, sizeof(char *))) == NULL) {
+	if ( (ret = calloc(retlen, sizeof(char *))) == NULL) {
 		warn("unable to process '%s'", text);
 		goto split_err0;
 	}
 
-	if( (str = strdup(text)) == NULL ) {
+	if ( (str = strdup(text)) == NULL ) {
 		warn("unable to process '%s'", text);
 		goto split_err1;
 	}
@@ -335,8 +338,8 @@ static char **split(const char *text, const char *delim)
 
 	while( tmp )
 	{
-		if( strlen(tmp) ) {
-			if( (ret[count++] = strdup(tmp)) == NULL ) {
+		if ( strlen(tmp) ) {
+			if ( (ret[count++] = strdup(tmp)) == NULL ) {
 				warn("unable to process '%s'", text);
 				goto split_err3;
 			}
@@ -348,8 +351,8 @@ static char **split(const char *text, const char *delim)
 	return ret;
 
 split_err3:
-	for( int i = 0; i < retlen; i++ ) {
-		if( ret[i] ) free(ret[i]);
+	for ( int i = 0; i < retlen; i++ ) {
+		if ( ret[i] ) free(ret[i]);
 	}
 	free(str);
 
@@ -369,158 +372,224 @@ static void read_config(void)
 	char *id = NULL, *runlevels = NULL, *action_name = NULL, *process = NULL;
 	bool no_utmp = 0;
 	int action;
+
+	//printf("read_config:\n");
+
+	//printf("about to fopen\n");
 	
-	if( (cfg = fopen(opt_cfg_filename, "r")) == NULL )
+	if ( (cfg = fopen(opt_cfg_filename, "r")) == NULL )
 		err(EXIT_FAILURE, "unable to open inittab '%s'", opt_cfg_filename);
 
-	if( regcomp(&cfg_regcomp, cfg_regex, REG_EXTENDED) )
+	//printf("about to regcomp\n");
+
+	if ( regcomp(&cfg_regcomp, cfg_regex, REG_EXTENDED) )
 		errx(EXIT_FAILURE, "unable to compile inittab regex");
 
-	for(;;)
+	for (;;)
 	{
-		if( feof(cfg) )
+		if ( feof(cfg) ) {
 			break;
+		}
 
-		if( ferror(cfg) ) {
+		if ( ferror(cfg) ) {
 			warnx("error whilst reading inittab around line %d", line + 1);
 			break;
 		}
 
-		if( (tmp = fgets(buf, sizeof(buf), cfg)) == NULL )
+		// printf("about to read\n");
+
+		if ( (tmp = fgets(buf, sizeof(buf), cfg)) == NULL )
 			break;
+
+		//printf("read: %s", tmp);
 
 		line++;
 
-		if( strlen(tmp) <= 1 )
+		if ( strlen(tmp) <= 1 )
 			continue;
 
 		while( *tmp && isspace(*tmp) ) tmp++;
 
-		if( !*tmp )
+		if ( !*tmp )
 			continue;
 
-		if( *tmp == '#' )
+		if ( *tmp == '#' )
 			continue;
 
-		if( regexec(&cfg_regcomp, buf, cfg_regnmatch, cfg_regmatch, 0) 
+		// printf("about to regexec\n");
+
+		if ( regexec(&cfg_regcomp, buf, cfg_regnmatch, cfg_regmatch, 0) 
 				== REG_NOMATCH ) {
 			warnx("invalid line %d", line);
 			puts(buf);
 			continue;
 		}
 
-		if( cfg_regmatch[1].rm_so != -1)
-			id = strndup(buf + cfg_regmatch[1].rm_so,
-					cfg_regmatch[1].rm_eo - cfg_regmatch[1].rm_so);
+		/*
+		for (int i = 0; i < cfg_regnmatch; i++) {
+			printf("cfg_regmatch[%i]={%d,%d} '", i,
+					cfg_regmatch[i].rm_so,
+					cfg_regmatch[i].rm_eo);
+			fwrite((buf + cfg_regmatch[i].rm_so),
+					cfg_regmatch[i].rm_eo - cfg_regmatch[i].rm_so,
+					1, stdout);
+			printf("'\n");
 
-		if( cfg_regmatch[2].rm_so != -1)
-			runlevels = strndup(buf + cfg_regmatch[2].rm_so,
-					cfg_regmatch[2].rm_eo - cfg_regmatch[2].rm_so);
-
-		if( runlevels == NULL ) {
-			warn("strndup failed in read_config");
-			goto parse_skip;
 		}
+		*/
 
-		if( cfg_regmatch[3].rm_so != -1)
-			action_name = strndup(buf + cfg_regmatch[3].rm_so,
-					cfg_regmatch[3].rm_eo - cfg_regmatch[3].rm_so);
+		size_t rm_len;
 
-		if( action_name == NULL) {
-			warn("strndup failed in read_config");
-			goto parse_skip;
-		}
+		if ( cfg_regmatch[1].rm_so != -1) {
+			rm_len = cfg_regmatch[1].rm_eo - cfg_regmatch[1].rm_so;
+			if ((id = calloc(1, rm_len + 1)) == NULL) {
+				warn("calloc(%d): id: ", rm_len + 1);
+				goto parse_skip;
+			}
+			strncpy(id, buf + cfg_regmatch[1].rm_so, rm_len);
+		} else
+			id = NULL;
+
+		//printf("id: %s\n", id);
+
+		if ( cfg_regmatch[2].rm_so != -1) {
+			rm_len = cfg_regmatch[2].rm_eo - cfg_regmatch[2].rm_so;
+			if ((runlevels = calloc(1, rm_len + 1)) == NULL) {
+				warn("calloc(%d): runlevels: ", rm_len + 1);
+				goto parse_skip;
+			}
+			strncpy(runlevels, buf + cfg_regmatch[2].rm_so, rm_len);
+		} else
+			runlevels = NULL;
+
+		//printf("runlevels: %s\n", runlevels);
+
+		if ( cfg_regmatch[3].rm_so != -1) {
+			rm_len = cfg_regmatch[3].rm_eo - cfg_regmatch[3].rm_so;
+			if ((action_name = calloc(1, rm_len + 1)) == NULL) {
+				warn("calloc(%d): action_name: ", rm_len + 1);
+				goto parse_skip;
+			}
+			strncpy(action_name, buf + cfg_regmatch[3].rm_so, rm_len);
+		} else
+			action_name = NULL;
+
+		//printf("action_name: %s\n", action_name);
 
 		no_utmp = (cfg_regmatch[4].rm_so != -1);
 
-		if( cfg_regmatch[5].rm_so != -1)
-			process = strndup(buf + cfg_regmatch[5].rm_so,
-					cfg_regmatch[5].rm_eo - cfg_regmatch[5].rm_so);
+		if ( cfg_regmatch[5].rm_so != -1) {
+			rm_len = cfg_regmatch[5].rm_eo - cfg_regmatch[5].rm_so;
+			if ((process = calloc(1, rm_len + 1)) == NULL) {
+				warn("calloc(%d): process: ", rm_len + 1);
+				goto parse_skip;
+			}
+			strncpy(process, buf + cfg_regmatch[5].rm_so, rm_len);
+			trim(process);
+		} else
+			process = NULL;
 
-		if( process == NULL ) {
-			warn("strndup failed in read_config");
-			goto parse_skip;
-		}
+		//printf("process: %s\n", process);
 
-		trim(process);
-
-		if( (action = string_to_action(action_name)) == -1 ) {
+		if ( (action = string_to_action(action_name)) == -1 ) {
 			warnx("invalid action '%s' on line %d", action_name, line);
 			goto parse_skip;
 		}
 
 		bool skip = false;
 
-		if( strlen(runlevels) )
-			for( int i = 0; runlevels[i]; i++ ) {
+		if ( runlevels && strlen(runlevels) )
+			for ( int i = 0; runlevels[i]; i++ ) {
 				runlevels[i] = tolower(runlevels[i]);
-				if( !is_valid_runlevel(runlevels[i]) ) {
+				if ( !is_valid_runlevel(runlevels[i]) ) {
 					warnx("invalid runlevel '%c' on line %d", 
 							runlevels[i], line);
 					skip = true;
 				}
 			}
 
-		if( skip )
+		if ( skip )
 			goto parse_skip;
 
 		switch( action )
 		{
 			case ACT_INITDEFAULT:
-				if( !isdigit(*runlevels) && *runlevels != 's' )
+				if ( !isdigit(*runlevels) && *runlevels != 's' )
 					warnx("invalid initdefault level '%c'", *runlevels);
-				else if( opt_def_runlevel == -1)
+				else if ( opt_def_runlevel == -1)
 					opt_def_runlevel = *runlevels;
 				skip = true;
 				break;
+
 			default:
 				break;
 		}
 
-		if( skip )
+		if ( skip )
 			goto parse_skip;
 
 		int ent_id = num_entries;
 
-		if( (entries = realloc(entries, 
+		//printf("expand entries\n");
+
+		if ( (entries = realloc(entries, 
 						sizeof(struct entry) * ++num_entries)) == NULL ) {
 			warn("unable to allocate memory for line %d", line);
 			goto parse_skip;
 		}
 
+		//printf("memset\n");
+
 		memset(&entries[ent_id], 0, sizeof(struct entry));
 
 		entries[ent_id].id = id;
-		
-		for( int i = 0; runlevels[i]; i++ )
+	
+		//printf("for 1\n");
+		if (runlevels && strlen(runlevels))
+		for ( int i = 0; runlevels[i]; i++ ) {
+			//printf("%d\n", i);
 			entries[ent_id].runlevels |= get_runlevel(runlevels[i]);
+		}
 		
-		if( entries[ent_id].runlevels & RUNLEVEL_S )
+		//printf("for 2\n");
+		if ( entries[ent_id].runlevels & RUNLEVEL_S )
 			entries[ent_id].con_type = 1;
+
+		//printf("rest\n");
 
 		entries[ent_id].action = action;
 		entries[ent_id].process = process;
 		entries[ent_id].no_utmp = no_utmp;
 
-		free(runlevels);
-		free(action_name);
+		//printf("free %x\n", runlevels);
+
+		if (runlevels)
+			free(runlevels);
+
+		//printf("free %x\n", action_name);
+
+		if (action_name)
+			free(action_name);
+
+		//printf("continue\n");
 		continue;
 
 parse_skip:
-		if( id ) {			free(id);			id			= NULL; }
-		if( runlevels ) {	free(runlevels);	runlevels	= NULL; }
-		if( action_name ) {	free(action_name);	action_name	= NULL; }
-		if( process ) {		free(process);		process		= NULL; }
+		if ( id ) {			free(id);			id			= NULL; }
+		if ( runlevels ) {	free(runlevels);	runlevels	= NULL; }
+		if ( action_name ) {	free(action_name);	action_name	= NULL; }
+		if ( process ) {		free(process);		process		= NULL; }
 		continue;
 	}
 
+	//printf("finished reading config\n");
 	regfree(&cfg_regcomp);
 	fclose(cfg);
 }
 
 static void clean_config(void)
 {
-	for( int i = 0; i < num_entries; i++)
+	for ( int i = 0; i < num_entries; i++)
 	{
 		free((char *)entries[i].id);
 		free((char *)entries[i].process);
@@ -529,7 +598,7 @@ static void clean_config(void)
 	free(entries);
 }
 
-__attribute__((__nonnull__))
+__attribute__ ((nonnull))
 static void parse_command_line(int argc, char *argv[])
 {
 	char opt;
@@ -567,16 +636,16 @@ static void parse_command_line(int argc, char *argv[])
 
 	/* TODO: check for 'auto' and 'single' */
 
-	if( optind - argc > 1 ) {
+	if ( optind - argc > 1 ) {
 		warnx("invalid arguments passed");
-	} else if( argc - optind == 1) {
-		if( !strcasecmp("single", argv[argc-1]) ) {
+	} else if ( argc - optind == 1) {
+		if ( !strcasecmp("single", argv[argc-1]) ) {
 			opt_def_runlevel = 's';
-		} else if( !strcasecmp("auto", argv[argc-1]) ) {
+		} else if ( !strcasecmp("auto", argv[argc-1]) ) {
 			opt_auto = 1;
 		} else {
 			const char rl = *argv[argc-1];
-			if( is_valid_runlevel(rl) )
+			if ( is_valid_runlevel(rl) )
 				opt_def_runlevel = rl;
 			else
 				warnx("invalid runlevel '%c' as argument", rl);
@@ -617,13 +686,13 @@ static void sigpwr_handler(int sig)
 
 	syslog(LOG_NOTICE, "received SIGPWR");
 
-	if( (fd = open(powerstatus_name, O_RDONLY|O_NOCTTY)) == -1 ) {
+	if ( (fd = open(powerstatus_name, O_RDONLY|O_NOCTTY)) == -1 ) {
 		warn("unable to open %s", powerstatus_name);
-	} else if( read(fd, &pwr_status, 1) == -1 ) {
+	} else if ( read(fd, &pwr_status, 1) == -1 ) {
 		warn("unable to read %s", powerstatus_name);
 	}
 
-	if( fd != -1 )
+	if ( fd != -1 )
 		close(fd);
 
 	/* TODO how to signal from within a signal? */
@@ -647,9 +716,9 @@ static void chld_handler(int sig)
 
 	while( (pid = waitpid(-1, &wstatus, WNOHANG)) != 0 )
 	{
-		if( pid == -1 && errno == ECHILD )
+		if ( pid == -1 && errno == ECHILD )
 			break;
-		else if( pid == -1 ) {
+		else if ( pid == -1 ) {
 			warn("chld_handler: waitpid");
 			continue;
 		}
@@ -657,10 +726,10 @@ static void chld_handler(int sig)
 		syslog(LOG_INFO, "child handler checking PID %d exited=%d rc=%d", pid,
 				WIFEXITED(wstatus), WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : 0);
 
-		for( int i = 0; i < num_entries; i++ ) {
-			if( entries[i].pid == pid ) {
+		for ( int i = 0; i < num_entries; i++ ) {
+			if ( entries[i].pid == pid ) {
 				entries[i].pid = 0;
-				if( !WIFEXITED(wstatus) || WEXITSTATUS(wstatus) )
+				if ( !WIFEXITED(wstatus) || WEXITSTATUS(wstatus) )
 					entries[i].next_run = time(NULL) + 2;
 				else
 					entries[i].next_run = 0;
@@ -671,7 +740,7 @@ static void chld_handler(int sig)
 
 /* as this function executes within the child process, we can be more lazy
  * with memory allocation etc. */
-__attribute__ ((__noreturn__))
+__attribute__ ((noreturn))
 static void execute_child(const char *const cmdline, const int con_type)
 {
 	char **argv = split(cmdline, " ");
@@ -682,19 +751,19 @@ static void execute_child(const char *const cmdline, const int con_type)
 	sigfillset(&sigset);
 	sigprocmask(SIG_UNBLOCK, &sigset, NULL);
 
-	if( argv == NULL || argv[0] == NULL )
+	if ( argv == NULL || argv[0] == NULL )
 		errx(EXIT_FAILURE, "no args for '%s'", cmdline);
 
-	if( (envp = calloc(def_envp_len + 4, sizeof(char *))) == NULL )
+	if ( (envp = calloc(def_envp_len + 4, sizeof(char *))) == NULL )
 		err(EXIT_FAILURE, "cannot allocate envp for '%s'", cmdline);
 
-	for( int i = 0; i < def_envp_len; i++ )
+	for ( int i = 0; i < def_envp_len; i++ )
 		envp[i] = strdup(def_envp[i]);
 
 	envp[def_envp_len] = strdup("RUNLEVEL=x");
 	envp[def_envp_len][strlen(envp[def_envp_len])-1] = run_level_id;
 
-	if( old_level != -1 ) {
+	if ( old_level != -1 ) {
 		envp[def_envp_len+1] = strdup("PREVLEVEL=x");
 		envp[def_envp_len+1][strlen(envp[def_envp_len+1])-1] = old_level_id;
 	}
@@ -706,15 +775,15 @@ static void execute_child(const char *const cmdline, const int con_type)
 	const char *con_name = con_type ? "/dev/null" : "/dev/console";
 	umask(old_mask);
 
-	if( (con_fd = open(con_name, O_RDWR|O_NOCTTY)) == -1 )
+	if ( (con_fd = open(con_name, O_RDWR|O_NOCTTY)) == -1 )
 		err(EXIT_FAILURE, "unable to open console for '%s'", argv[0]);
 
-	if( dup(con_fd) == -1 || dup(con_fd) == -1 )
+	if ( dup(con_fd) == -1 || dup(con_fd) == -1 )
 		warn("dup in execute_child for '%s'", argv[0]);
 
 	setsid();
 
-	if( execve(argv[0], argv, envp) )
+	if ( execve(argv[0], argv, envp) )
 		err(EXIT_FAILURE, "unable to execv '%s' for '%s'", argv[0], cmdline);
 
 	exit(EXIT_SUCCESS);
@@ -724,13 +793,20 @@ static void run_nowait(struct entry *ent)
 {
 	pid_t child_pid;
 
-	if( ent->next_run && ent->next_run > time(NULL) )
+	if ( ent->next_run && ent->next_run > time(NULL) )
 		return;
+
+	if (access(ent->process, R_OK|X_OK)) {
+		syslog(LOG_WARNING, "%s is not readable/executable", ent->process);
+		ent->next_run = 0;
+		ent->last_run = time(NULL);
+		return;
+	}
 
 	ent->next_run = 0;
 	ent->last_run = time(NULL);
 
-	if( (ent->pid = child_pid = fork()) ) {
+	if ( (ent->pid = child_pid = fork()) ) {
 		return;
 	}
 
@@ -743,13 +819,20 @@ static void run_wait(struct entry *ent)
 	int wstatus;
 	time_t t;
 
-	if( ent->next_run && ent->next_run > (t = time(NULL)) )
+	if (access(ent->process, R_OK|X_OK)) {
+		syslog(LOG_WARNING, "%s is not readable/executable", ent->process);
+		ent->next_run = 0;
+		ent->last_run = time(NULL);
+		return;
+	}
+
+	if ( ent->next_run && ent->next_run > (t = time(NULL)) )
 		sleep(ent->next_run - t);
 
 	ent->next_run = 0;
 	ent->last_run = time(NULL);
 
-	if( (ent->pid = child_pid = fork()) ) {
+	if ( (ent->pid = child_pid = fork()) ) {
 		waitpid(child_pid, &wstatus, 0);
 		ent->pid = 0;
 		return;
@@ -760,27 +843,35 @@ static void run_wait(struct entry *ent)
 
 static inline void close_pipe(void)
 {
-	close(pipe_fd);
-	pipe_fd = -1;
+	if (pipe_fd != -1) {
+		close(pipe_fd);
+		pipe_fd = -1;
+	}
 }
 
 static int check_pipe(void)
 {
 	struct stat st;
+	int rc;
 
-	if( stat(PIPE_NAME, &st) == -1 && errno == ENOENT ) {
+	if ( (rc = stat(PIPE_NAME, &st)) == -1 && errno == ENOENT ) {
 		
-		if( pipe_fd != -1)
-			close_pipe();
+		close_pipe();
 
-		if( mkfifo(PIPE_NAME, 0600) == -1 )
-			warn("mkfifo failed");
+		if ( mkfifo(PIPE_NAME, 0600) == -1 ) {
+			warn("error creating" PIPE_NAME);
+			return -1;
+		}
+	} else if (rc == -1) {
+		warn("error checking " PIPE_NAME);
+		close_pipe();
+		return -1;
 	}
 
 	/* TODO check if inode has changed? */
 
-	if( pipe_fd == -1 )
-		if( (pipe_fd = open(PIPE_NAME, O_RDWR|O_NONBLOCK)) == -1 )
+	if ( pipe_fd == -1 )
+		if ( (pipe_fd = open(PIPE_NAME, O_RDWR|O_NONBLOCK)) == -1 )
 			warn("unable to open initctl");
 
 	return pipe_fd;
@@ -792,9 +883,9 @@ static void change_run_level(const int old, const int new_level)
 
 	syslog(LOG_NOTICE, "entering runlevel '%c'", run_level_id);
 
-	for( int sig = 0; sig < 2; sig++) {
-		for( int i = 0; i < num_entries; i++ )
-			if( entries[i].action == ACT_RESPAWN && !(entries[i].runlevels & old) && entries[i].pid != 0)
+	for ( int sig = 0; sig < 2; sig++) {
+		for ( int i = 0; i < num_entries; i++ )
+			if ( entries[i].action == ACT_RESPAWN && !(entries[i].runlevels & old) && entries[i].pid != 0)
 				kill(entries[i].pid, sigs[sig]);
 		sleep(3);
 	}
@@ -809,21 +900,21 @@ static void change_run_level(const int old, const int new_level)
 	run_level = new_level;
 	run_level_id = get_runlevel(run_level);
 
-	for( int i = 0; i < num_entries; i++ )
-		if( entries[i].action == ACT_ONCE && (entries[i].runlevels & run_level) )
+	for ( int i = 0; i < num_entries; i++ )
+		if ( entries[i].action == ACT_ONCE && (entries[i].runlevels & run_level) )
 			run_nowait(&entries[i]);
 
-	for( int i = 0; i < num_entries; i++ )
-		if( entries[i].action == ACT_WAIT && (entries[i].runlevels & run_level) )
+	for ( int i = 0; i < num_entries; i++ )
+		if ( entries[i].action == ACT_WAIT && (entries[i].runlevels & run_level) )
 			run_wait(&entries[i]);
 
-	for( int i = 0; i < num_entries; i++ )
-		if( entries[i].action == ACT_RESPAWN && (entries[i].runlevels & run_level) && entries[i].pid == 0 )
+	for ( int i = 0; i < num_entries; i++ )
+		if ( entries[i].action == ACT_RESPAWN && (entries[i].runlevels & run_level) && entries[i].pid == 0 )
 			run_nowait(&entries[i]);
 
-	if( new_level == 's' ) {
-		for( int i = 0; i < num_entries; i++ )
-			if( (entries[i].runlevels & RUNLEVEL_S) ) {
+	if ( new_level == 's' ) {
+		for ( int i = 0; i < num_entries; i++ )
+			if ( (entries[i].runlevels & RUNLEVEL_S) ) {
 				run_wait(&entries[i]);
 				break;
 			}
@@ -839,14 +930,14 @@ static void process_pipe(int fd)
 	{
 		len = read(fd, &req, sizeof(struct init_request));
 
-		if( len == 0 || (len == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) ) {
+		if ( len == 0 || (len == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) ) {
 			return;
-		} else if( len == -1 ) {
+		} else if ( len == -1 ) {
 			close_pipe();
 			return;
-		} else if( len != sizeof(struct init_request) ) {
+		} else if ( len != sizeof(struct init_request) ) {
 			warnx("invalid packet on initctl");
-		} else if( req.magic != INIT_REQ_MAGIC ) {
+		} else if ( req.magic != INIT_REQ_MAGIC ) {
 			warnx("invalid magic on initctl");
 		} else {
 			switch(req.cmd)
@@ -876,7 +967,7 @@ static void main_loop(void)
 	{
 		const int fd = check_pipe();
 
-		if( fd == -1 ) {
+		if ( fd == -1 ) {
 			sleep(10);
 		} else {
 
@@ -890,21 +981,21 @@ static void main_loop(void)
 
 			const int ret = select(fd + 1, &read_set, NULL, &ex_set, &tv);
 
-			if( ret < 0 && errno != EINTR ) {
+			if ( ret < 0 && errno != EINTR ) {
 				warn("select on initctl");
 				close_pipe();
-			} else if( ret > 1 ) {
-				if( FD_ISSET(fd, &ex_set) ) {
+			} else if ( ret > 1 ) {
+				if ( FD_ISSET(fd, &ex_set) ) {
 					close_pipe();
-				} else if( FD_ISSET(fd, &read_set) ) {
+				} else if ( FD_ISSET(fd, &read_set) ) {
 					process_pipe(fd);
 				}
 			}
 
-		} /* if( fd == -1 ) */
+		} /* if ( fd == -1 ) */
 
-		for( int i = 0; i < num_entries; i++ )
-			if( !entries[i].pid && (entries[i].runlevels & run_level) && entries[i].action == ACT_RESPAWN )
+		for ( int i = 0; i < num_entries; i++ )
+			if ( !entries[i].pid && (entries[i].runlevels & run_level) && entries[i].action == ACT_RESPAWN )
 				run_nowait(&entries[i]);
 	} /* while(true) */
 }
@@ -933,6 +1024,8 @@ int main(int argc, char *argv[], char *envp[])
 	const pid_t my_pid = getpid();
 	struct stat sb;
 
+	printf("fail-init " VERSION "\n");
+
 	parse_command_line(argc, argv);
 
 	old_mask = umask(0);
@@ -940,43 +1033,43 @@ int main(int argc, char *argv[], char *envp[])
 	openlog("init", LOG_CONS|LOG_PID, LOG_DAEMON);
 	syslog(LOG_NOTICE, "init starting");
 
-	if( getuid() != 0 || geteuid() != 0 )
+	if ( getuid() != 0 || geteuid() != 0 )
 		warnx("must be ran as root");
 
-	if( my_pid != 1 )
+	if ( my_pid != 1 )
 		warnx("must be PID 1");
 
-	for( int i = 0; i < num_mount_ents; i++ )
-		if( !stat(mount_ents[i].dest, &sb) )
-			if( mount(mount_ents[i].source, mount_ents[i].dest, 
+	for ( int i = 0; i < num_mount_ents; i++ )
+		if ( !stat(mount_ents[i].dest, &sb) )
+			if ( mount(mount_ents[i].source, mount_ents[i].dest, 
 					mount_ents[i].fstype, mount_ents[i].flags,
 					mount_ents[i].data) == -1 && errno != EBUSY )
 				warn("mount %s", mount_ents[i].dest);
 
-	for( int i = 0; envp[i]; i++ )
-		printf(" %s\n", envp[i]);
+	//for ( int i = 0; envp[i]; i++ )
+	//	printf(" %s\n", envp[i]);
 	
-	if( (con_fd = open("/dev/tty", O_RDWR|O_NOCTTY)) != -1 )
+	if ( (con_fd = open("/dev/tty", O_RDWR|O_NOCTTY)) != -1 )
 		ioctl(con_fd, TIOCNOTTY);
 
-	if( setsid() == -1 )
+	if ( setsid() == -1 )
 		warn("unable to setsid()");
 
-	close(0);
-	close(1);
-	close(2);
+	//close(0);
+	//close(1);
+	//close(2);
 
-	if( (con_fd = open("/dev/null", O_RDWR|O_NOCTTY)) == -1 )
+	if ( (con_fd = open("/dev/null", O_RDWR|O_NOCTTY)) == -1 )
 		warn("/dev/null");
 
-	if( dup(con_fd) == -1 || dup(con_fd) == -1 )
+	if ( dup(con_fd) == -1 || dup(con_fd) == -1 )
 		warn("dup in main");
 
 	setvbuf(stdin, NULL, _IONBF, 0);
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
-	if( chdir("/") == -1 )
+	if ( chdir("/") == -1 )
 		warn("unable to chdir to /");
 
 
@@ -991,13 +1084,13 @@ int main(int argc, char *argv[], char *envp[])
 	run_level_id = opt_def_runlevel;
 	run_level = get_runlevel(run_level_id);
 
-	if( run_level == -1 ) {
+	if ( run_level == -1 ) {
 		warnx("no runlevel specified on command line or inittab");
 		run_level_id = 's';
 		run_level = RUNLEVEL_S;
 	}
 
-	if( sigaction(SIGCHLD, &(const struct sigaction) {
+	if ( sigaction(SIGCHLD, &(const struct sigaction) {
 				.sa_handler = chld_handler,
 				.sa_flags = SA_NOCLDSTOP,
 				.sa_mask = all_block
@@ -1006,29 +1099,29 @@ int main(int argc, char *argv[], char *envp[])
 
 	sigprocmask(SIG_UNBLOCK, &set, 0);
 
-	if( sigaction(SIGHUP, &(const struct sigaction) { .sa_handler = sighup_handler}, NULL) )
+	if ( sigaction(SIGHUP, &(const struct sigaction) { .sa_handler = sighup_handler}, NULL) )
 		err(EXIT_FAILURE, "failure on sigaction(SIGHUP)");
-	if( sigaction(SIGUSR1, &(const struct sigaction) { .sa_handler = sigusr1_handler}, NULL) )
+	if ( sigaction(SIGUSR1, &(const struct sigaction) { .sa_handler = sigusr1_handler}, NULL) )
 		err(EXIT_FAILURE, "failure on sigaction(SIGUSR1)");
-	if( sigaction(SIGUSR2, &(const struct sigaction) { .sa_handler = sigusr2_handler}, NULL) )
+	if ( sigaction(SIGUSR2, &(const struct sigaction) { .sa_handler = sigusr2_handler}, NULL) )
 		err(EXIT_FAILURE, "failure on sigaction(SIGUSR2)");
-	if( sigaction(SIGINT, &(const struct sigaction) { .sa_handler = sigint_handler}, NULL) )
+	if ( sigaction(SIGINT, &(const struct sigaction) { .sa_handler = sigint_handler}, NULL) )
 		err(EXIT_FAILURE, "failure on sigaction(SIGINT)");
-	if( sigaction(SIGWINCH, &(const struct sigaction) { .sa_handler = sigwinch_handler}, NULL) )
+	if ( sigaction(SIGWINCH, &(const struct sigaction) { .sa_handler = sigwinch_handler}, NULL) )
 		err(EXIT_FAILURE, "failure on sigaction(SIGWINCH)");
-	if( sigaction(SIGPWR, &(const struct sigaction) { .sa_handler = sigpwr_handler}, NULL) )
+	if ( sigaction(SIGPWR, &(const struct sigaction) { .sa_handler = sigpwr_handler}, NULL) )
 		err(EXIT_FAILURE, "failure on sigaction(SIGPWR)");
 
-	for( int i = 0; i < num_entries; i++ )
-		if( entries[i].action == ACT_SYSINIT )
+	for ( int i = 0; i < num_entries; i++ )
+		if ( entries[i].action == ACT_SYSINIT )
 			run_wait(&entries[i]);
 
-	for( int i = 0; i < num_entries; i++ )
-		if( entries[i].action == ACT_BOOT )
+	for ( int i = 0; i < num_entries; i++ )
+		if ( entries[i].action == ACT_BOOT )
 			run_nowait(&entries[i]);
 
-	for( int i = 0; i < num_entries; i++ )
-		if( entries[i].action == ACT_BOOTWAIT )
+	for ( int i = 0; i < num_entries; i++ )
+		if ( entries[i].action == ACT_BOOTWAIT )
 			run_wait(&entries[i]);
 
 	change_run_level(0, run_level_id);
