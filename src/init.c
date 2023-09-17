@@ -276,7 +276,9 @@ static void warnx(const char *const fmt, ...)
 __attribute__ ((pure))
 static int get_runlevel(const char c)
 {
-	if ( c >= '0' && c <= '9' )
+	if ( c == -1 )
+		return -1;
+	else if ( c >= '0' && c <= '9' )
 		return (1 << (c - '0'));
 	else if ( c == 's')
 		return RUNLEVEL_S;
@@ -1113,15 +1115,15 @@ int main(int argc, char *argv[], char *envp[])
 		err(EXIT_FAILURE, "failure on sigaction(SIGPWR)");
 
 	for ( int i = 0; i < num_entries; i++ )
-		if ( entries[i].action == ACT_SYSINIT )
+		if ( entries[i].action == ACT_SYSINIT && entries[i].process)
 			run_wait(&entries[i]);
 
 	for ( int i = 0; i < num_entries; i++ )
-		if ( entries[i].action == ACT_BOOT )
+		if ( entries[i].action == ACT_BOOT && entries[i].process)
 			run_nowait(&entries[i]);
 
 	for ( int i = 0; i < num_entries; i++ )
-		if ( entries[i].action == ACT_BOOTWAIT )
+		if ( entries[i].action == ACT_BOOTWAIT && entries[i].process)
 			run_wait(&entries[i]);
 
 	change_run_level(0, run_level_id);

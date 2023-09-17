@@ -413,4 +413,4 @@ chmod +x config.status
 
 echo "Please type make to continue"
 
-wait
+exit 0
