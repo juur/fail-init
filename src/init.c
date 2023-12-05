@@ -445,10 +445,10 @@ static void read_config(void)
 		if ( cfg_regmatch[1].rm_so != -1) {
 			rm_len = cfg_regmatch[1].rm_eo - cfg_regmatch[1].rm_so;
 			if ((id = calloc(1, rm_len + 1)) == NULL) {
-				warn("calloc(%d): id: ", rm_len + 1);
+				warn("calloc(%ld): id: ", rm_len + 1);
 				goto parse_skip;
 			}
-			strncpy(id, buf + cfg_regmatch[1].rm_so, rm_len);
+			strncat(id, buf + cfg_regmatch[1].rm_so, rm_len);
 		} else
 			id = NULL;
 
@@ -457,10 +457,10 @@ static void read_config(void)
 		if ( cfg_regmatch[2].rm_so != -1) {
 			rm_len = cfg_regmatch[2].rm_eo - cfg_regmatch[2].rm_so;
 			if ((runlevels = calloc(1, rm_len + 1)) == NULL) {
-				warn("calloc(%d): runlevels: ", rm_len + 1);
+				warn("calloc(%ld): runlevels: ", rm_len + 1);
 				goto parse_skip;
 			}
-			strncpy(runlevels, buf + cfg_regmatch[2].rm_so, rm_len);
+			memcpy(runlevels, buf + cfg_regmatch[2].rm_so, rm_len);
 		} else
 			runlevels = NULL;
 
@@ -469,10 +469,10 @@ static void read_config(void)
 		if ( cfg_regmatch[3].rm_so != -1) {
 			rm_len = cfg_regmatch[3].rm_eo - cfg_regmatch[3].rm_so;
 			if ((action_name = calloc(1, rm_len + 1)) == NULL) {
-				warn("calloc(%d): action_name: ", rm_len + 1);
+				warn("calloc(%ld): action_name: ", rm_len + 1);
 				goto parse_skip;
 			}
-			strncpy(action_name, buf + cfg_regmatch[3].rm_so, rm_len);
+			memcpy(action_name, buf + cfg_regmatch[3].rm_so, rm_len);
 		} else
 			action_name = NULL;
 
@@ -483,10 +483,10 @@ static void read_config(void)
 		if ( cfg_regmatch[5].rm_so != -1) {
 			rm_len = cfg_regmatch[5].rm_eo - cfg_regmatch[5].rm_so;
 			if ((process = calloc(1, rm_len + 1)) == NULL) {
-				warn("calloc(%d): process: ", rm_len + 1);
+				warn("calloc(%ld): process: ", rm_len + 1);
 				goto parse_skip;
 			}
-			strncpy(process, buf + cfg_regmatch[5].rm_so, rm_len);
+			memcpy(process, buf + cfg_regmatch[5].rm_so, rm_len);
 			trim(process);
 		} else
 			process = NULL;
