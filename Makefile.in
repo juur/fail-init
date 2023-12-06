@@ -63,7 +63,7 @@ $(objdir)/.d:
 	@mkdir -p "$(objdir)/.d" 2>/dev/null
 
 $(objdir)/$(PACKAGE): $(package_OBJS)
-	$(CC) $(LDFLAGS) $(package_OBJS) -o $@
+	$(CC) $< $(LDFLAGS) -o $@
 
 $(objdir)/%.yy.h $(objdir)/%.yy.c $(objdir)/.d/%.yy.d: $(srcdir)/src/%.l $(objdir)/.d
 	$(LEX) $(LFLAGS) -o $(<F:%.l=%.yy.c) --header-file=$(<F:%.l=%.yy.h) $<
