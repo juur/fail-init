@@ -1002,6 +1002,7 @@ static void main_loop(void)
 	} /* while(true) */
 }
 
+#ifdef MOUNT_ENTS
 struct mount_ent {
 	const char *const source;
 	const char *const dest;
@@ -1016,15 +1017,15 @@ static const struct mount_ent mount_ents[] = {
 	{ "proc",		"/proc",	"proc",		MS_NODEV|MS_NOEXEC|MS_NOSUID|MS_RELATIME,	NULL }
 };
 static int num_mount_ents = sizeof(mount_ents) / sizeof(struct mount_ent);
+#endif
 
 /* public function definitions */
 
-int main(int argc, char *argv[], char *envp[])
+int main(int argc, char *argv[]/*, char *envp[]*/)
 {
 	sigset_t set, all_block;
 	int con_fd;
 	const pid_t my_pid = getpid();
-	struct stat sb;
 
 	printf("fail-init " VERSION "\n");
 
@@ -1041,12 +1042,15 @@ int main(int argc, char *argv[], char *envp[])
 	if ( my_pid != 1 )
 		warnx("must be PID 1");
 
+#ifdef MOUNT_ENTS
+    struct stat sb;
 	for ( int i = 0; i < num_mount_ents; i++ )
 		if ( !stat(mount_ents[i].dest, &sb) )
 			if ( mount(mount_ents[i].source, mount_ents[i].dest, 
 					mount_ents[i].fstype, mount_ents[i].flags,
 					mount_ents[i].data) == -1 && errno != EBUSY )
-				warn("mount %s", mount_ents[i].dest);
+				warn("mount of %s failed", mount_ents[i].dest);
+#endif
 
 	//for ( int i = 0; envp[i]; i++ )
 	//	printf(" %s\n", envp[i]);
