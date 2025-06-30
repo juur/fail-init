@@ -37,6 +37,8 @@ Directory and file names:
 
 Optional features:
   --disable-dependency-tracking
+  --enable-automount              include automounting /proc etc. (default)
+  --disable-automount             excluding automounting /proc etc.
 EOF
 }
 
@@ -49,6 +51,7 @@ EOF
 
 QUIET=0
 DEPS=1
+FEATURE_AUTOMOUNT=1
 SAVED_ARGS="$*"
 
 while :; do
@@ -81,6 +84,8 @@ while :; do
 		--program-prefix=) PROGPREFIX= ;;
 		--disable-dependency-tracking) DEPS=0 ;;
 		--enable-dependency-tracking) DEPS=1 ;;
+		--enable-automounting) FEATURE_AUTOMOUNT=1 ;;
+		--disable-automounting) FEATURE_AUTOMOUNT=0 ;;
 		*) [[ -n "${1-}" ]] && { echo "Unknown argument ${1-}" >&2; exit 1; } ;;
 	esac
 	shift || break
@@ -94,9 +99,9 @@ else
 fi
 
 OBJDIR=$(pwd)
-SRCDIR=$(dirname ${0})
+SRCDIR=$(dirname "${0}")
 
-if [[ "$(realpath ${OBJDIR})" = "$(realpath ${SRCDIR})" ]]; then
+if [[ "$(realpath "${OBJDIR}")" = "$(realpath "${SRCDIR}")" ]]; then
 	echo "Building inside source directory."
 fi
 
@@ -125,10 +130,8 @@ TARGET=${TARGET:-}
 
 # Default compiler flags
 
-CFLAGS=${CFLAGS:--O -std=c99 -pipe -Wall -pedantic -Wextra -Wno-unused-parameter \
-	-Wno-unused-function -Wno-sign-compare -D_FORTIFY_SOURCE=2 \
-	-fstack-protector}
-CPPFLAGS=${CPPFLAGS:--D_XOPEN_SOURCE=700}
+CFLAGS=${CFLAGS:--O2 -g -std=c2x -Wall -Wextra }
+CPPFLAGS=${CPPFLAGS:-}
 LDFLAGS=${LDFLAGS:-}
 TARGET=${TARGET:-}
 YFLAGS=${YFLAGS:-}
@@ -139,25 +142,25 @@ LFLAGS=${LFLAGS:-}
 PKG_CONFIG=${PKG_CONFIG:-pkg-config}
 CC=${CC:-${TOOL}cc}
 CXX=${CXX:-${TOOL}c++}
-YACC=
-#${YACC:-${TOOL}byacc}
-LEX=
-#${LEX:-${TOOL}flex}
+AR=${AR:-${TOOL}ar}
+RANLIB=${RANLIB:-${TOOL}ranlib}
+YACC=${YACC:-yacc}
+LEX=${LEX:-flex}
 
 # Predefined values, which should not be easily changed
 
 [[ -f "${SRCDIR}/misc/VERSION" && -r "${SRCDIR}/misc/VERSION" ]] || fail "Cannot read misc/VERSION"
 [[ -f "${SRCDIR}/misc/PACKAGE" && -r "${SRCDIR}/misc/PACKAGE" ]] || fail "Cannot read misc/PACKAGE"
 
-PACKAGE=$(cat "${SRCDIR}/misc/PACKAGE")
-VERSION=$(cat "${SRCDIR}/misc/VERSION")
+PACKAGE=$(cat "${SRCDIR}"/misc/PACKAGE)
+VERSION=$(cat "${SRCDIR}"/misc/VERSION)
 
 # Support functions
 
 check_pkg() 
 {
 	echo -n "Checking for $1 ... "
-	$(${PKG_CONFIG} --exists "${1}")
+	"${PKG_CONFIG}" --exists "${1}"
 	local RT=$?
 	ok ${RT}
 	return ${RT}
@@ -172,8 +175,9 @@ fail()
 check_header()
 {
 	echo -n "Checking for ${1} ... "
-	$(echo "#include <${1}>" | \
-		${CC} ${CFLAGS} ${CPPFLAGS} ${LDFLAGS} -E - -o /dev/null 2>>config.log)
+	# shellcheck disable=SC2086
+	echo "#include <${1}>" | \
+		"${CC}" ${CFLAGS} ${CPPFLAGS} ${LDFLAGS} -E - -o /dev/null 2>>config.log
 	local RT=$?
 	ok $?
 	return ${RT}
@@ -183,11 +187,11 @@ check_lib()
 {
 	local F=/tmp/$$.c
 
-	echo "#define _GNU_SOURCE" >${F}
+	echo "#define _XOPEN_SOURCE 700" >${F}
 	echo 'main(){}' >>${F}
 	echo -n "Checking for -l${1} ... "
-	$(${CC} ${LDFLAGS} ${CPPFLAGS} ${CFLAGS} -l${1} ${F} \
-		-o /dev/null 2>>config.log)
+	# shellcheck disable=SC2086
+	"${CC}" ${LDFLAGS} ${CPPFLAGS} ${CFLAGS} -l"${1}" "${F}" -o /dev/null 2>>config.log
 	local RT=$?
 	ok ${RT}
 	rm -f ${F}
@@ -202,16 +206,19 @@ ok()
 check_func()
 {
 	local F=/tmp/$$.c
-	local FUNC="$(echo "${1}" | cut -d: -f1)"
-	local ARGS="$(echo "${1}" | cut -d: -f2-)"
+	local FUNC
+	FUNC="$(echo "${1}" | cut -d: -f1)"
+	local ARGS
+	ARGS="$(echo "${1}" | cut -d: -f2-)"
 
-	echo "#define _GNU_SOURCE" >${F}
+	echo "#define _XOPEN_SOURCE 700" >${F}
 	for i in ${H_FILES} ; do
 		echo "#include <${i}>" >>${F}
 	done
 	echo "void main() { ${FUNC}(${ARGS}); }" >>${F}
 	echo -n "Checking for ${FUNC}() ... "
-	$(${CC} ${LDFLAGS} ${CPPFLAGS} ${CFLAGS} ${F} -o /dev/null 2>>config.log)
+	# shellcheck disable=SC2086
+	"${CC}" ${LDFLAGS} ${CPPFLAGS} ${CFLAGS} ${F} -o /dev/null 2>>config.log
 	local RT=$?
 
 	ok ${RT}
@@ -221,10 +228,12 @@ check_func()
 
 check_yacc()
 {
-	local F=$(mktemp); trap "{ rm -f \"${F}\"; }" EXIT
+	local F
+	F=$(mktemp); trap "{ rm -f \"${F}\"; }" EXIT
 
+	# shellcheck disable=SC2086
 	echo -e '%%\nstart: ;\n%%\n' | \
-		${YACC} ${YFLAGS} -o "${F}" -
+		"${YACC}" ${YFLAGS} -o "${F}" -
 	local RT=$?
 
 	rm -f "${F}"
@@ -233,10 +242,12 @@ check_yacc()
 
 check_lex()
 {
-	local F=$(mktemp); trap "{ rm -f \"${F}\"; }" EXIT
+	local F
+	F=$(mktemp); trap "{ rm -f \"${F}\"; }" EXIT
 	
+	# shellcheck disable=SC2086
 	echo -e '%x TEMP\n%option stack bison-bridge reentrant\n%%\n. { ECHO; }\n%%\n' | \
-		${LEX} ${LFLAGS} -o "${F}" -
+		"${LEX}" ${LFLAGS} -o "${F}" -
 	local RT=$?
 
 	rm -f "${F}"
@@ -246,16 +257,20 @@ check_lex()
 # Check for a c compiler (mandatory)
 
 echo -n "Checking for a C compiler ... "
-if [[ ! -x "$(which ${CC})" ]]; then
+if [[ ! -x "$(which "${CC}")" ]]; then
 	fail "Error: CC not valid"
 else
 	export CC
-	echo "$(which ${CC})" | tee -a config.log
+	which "${CC}" | tee -a config.log
 fi
 
-echo -n "Checking $(basename ${CC}) can produce executables ... "
+echo -n "Checking $(basename "${CC}") can produce executables ... "
 echo -e '#include <stdlib.h>\nmain() {exit(0);}' | \
-	${CC} -xc -o /dev/null - 2>>config.log && echo "ok" || fail "${CC} cannot produce executables"
+	if "${CC}" -xc -o /dev/null - 2>>config.log; then 
+		echo "ok"
+	else
+		fail "${CC} cannot produce executables"
+	fi
 
 HOST_MACHINE=$(${CC} -dumpmachine)
 
@@ -289,23 +304,23 @@ TOOL_CHECK=""
 # Check for pkg-config (mandatory)
 
 echo -n "Checking for pkg-config ... "
-if [[ ! -x "$(which ${PKG_CONFIG})" ]]; then
+if [[ ! -x "$(which "${PKG_CONFIG}")" ]]; then
 	fail "Error: PKG_CONFIG not valid"
 fi
 
 export PKG_CONFIG
-echo "$(which ${PKG_CONFIG})"
+which "${PKG_CONFIG}"
 
 # start a new configuration file
 if [[ -e ${OBJDIR}/config.h ]]; then 
-	mv -f ${OBJDIR}/config.h ${OBJDIR}/config.h~; 
+	mv -f "${OBJDIR}"/config.h "${OBJDIR}"/config.h~
 fi
-rm -f ${OBJDIR}/config.h
+rm -f "${OBJDIR}"/config.h
 
 # kludge any defines here
 
 # set-up defines
-echo "#define VERSION \"${VERSION}\"" >> ${OBJDIR}/config.h
+echo "#define VERSION \"${VERSION}\"" >> "${OBJDIR}"/config.h
 
 # package checks
 
@@ -319,44 +334,56 @@ done
 # library checks
 
 for f in ${LIB_CHECK} ; do
-	if check_lib "${f}"; then LDFLAGS="${LDFLAGS} -l${f}" ; fi
+	if check_lib "${f}"; then LDFLAGS="${LDFLAGS} -l\"${f}\"" ; fi
 done
 
 # Perform checks for system headers and functions
 # This is done here to ensure relevant libraries are linked etc.
 
 for f in ${H_FILES} ; do
-	def=$(echo ${f} | sed "s#/#_#;s#\.#_#;s#/#_#;" | tr "[a-z]" "[A-Z]")
+	def=$(echo "${f}" | sed "s#/#_#;s#\.#_#;s#/#_#;" | tr "[:lower:]" "[:upper:]")
     if check_header "${f}"; then 
-		echo "#define HAVE_${def} 1" >> ${OBJDIR}/config.h
+		echo "#define HAVE_${def} 1" >> "${OBJDIR}"/config.h
 	fi
 done
 
 for f in ${FUNC_CHECK}; do
-	def=$(echo ${f} | cut -d: -f1 | tr "[a-z]" "[A-Z]")
+	def=$(echo "${f}" | cut -d: -f1 | tr "[:lower:]" "[:upper:]")
 	if check_func "${f}"; then 
-		echo "#define HAVE_${def} 1" >> ${OBJDIR}/config.h
+		echo "#define HAVE_${def} 1" >> "${OBJDIR}"/config.h
 	fi
 done
 
 for f in ${TOOL_CHECK}; do
-	if ! which ${f} >/dev/null 2>&1; then
+	if ! which "${f}" >/dev/null 2>&1; then
 		fail "Error: ${f} not found"
 	fi
 done
 
 if [[ "${YACC}" ]]; then
-	echo -n "Checking $(basename ${YACC}) works ... "
-	check_yacc 2>>config.log && echo "ok" || fail "provided YACC not functioning"
+	echo -n "Checking $(basename "${YACC}") works ... "
+	if check_yacc 2>>config.log; then
+		echo "ok"
+	else
+		fail "provided YACC not functioning"
+	fi
 fi
 
 if [[ "${LEX}" ]]; then
-	echo -n "Checking $(basename ${LEX}) works ... "
-	check_lex 2>>config.log && echo "ok" || fail "provided LEX not functioning"
+	echo -n "Checking $(basename "${LEX}") works ... "
+	if check_lex 2>>config.log; then
+		echo "ok"
+	else
+		fail "provided LEX not functioning"
+	fi
+fi
+
+if [[ FEATURE_AUTOMOUNT -eq 1 ]]; then
+    echo "#define ENABLE_AUTOMOUNT 1" >> "${OBJDIR}"/config.h
 fi
 
 # Finish config.h
-echo "#define SYSCONFDIR \"${SYSCONFDIR}\"" >> ${OBJDIR}/config.h
+echo "#define SYSCONFDIR \"${SYSCONFDIR}\"" >> "${OBJDIR}"/config.h
 
 # Create Makefile from template
 
@@ -369,9 +396,11 @@ ARGS=$(cat <<- __END
 	s#@@CC@@#${CC}#;
 	s#@@CFLAGS@@#${CFLAGS}#;
 	s#@@CPPFLAGS@@#${CPPFLAGS}#;
+	s#@@CXX@@#${CXX}#;
+	s#@@AR@@#${AR}#;
+	s#@@RANLIB@@#${RANLIB}#;
 	s#@@LFLAGS@@#${LFLAGS}#;
 	s#@@YFLAGS@@#${YFLAGS}#;
-	s#@@CXX@@#${CXX}#;
 	s#@@DATADIR@@#${DATADIR}#;
 	s#@@DATAROOTDIR@@#${DATAROOTDIR}#;
 	s#@@EXECPREFIX@@#${EXECPREFIX}#;
@@ -393,7 +422,7 @@ ARGS=$(cat <<- __END
 __END
 )
 
-cat ${SRCDIR}/Makefile.in | sed "${ARGS}" > ${OBJDIR}/Makefile
+sed "${ARGS}" <"${SRCDIR}"/Makefile.in >"${OBJDIR}"/Makefile
 
 echo "Creating config.status"
 

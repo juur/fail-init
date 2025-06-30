@@ -655,33 +655,33 @@ static void parse_command_line(int argc, char *argv[])
 	}
 }
 
-static void sighup_handler(int sig)
+static void sighup_handler(int )
 {
 	syslog(LOG_NOTICE, "received SIGHUP, reloading configuration file");
 }
 
-static void sigusr1_handler(int sig)
+static void sigusr1_handler(int )
 {
 	syslog(LOG_NOTICE, "received SIGUSR1");
 }
 
-static void sigusr2_handler(int sig)
+static void sigusr2_handler(int )
 {
 	syslog(LOG_NOTICE, "received SIGUSR2");
 }
 
-static void sigint_handler(int sig)
+static void sigint_handler(int )
 {
 	syslog(LOG_NOTICE, "received SIGINT, CTRL-ALT-DEL pressed");
 	exit(EXIT_SUCCESS);
 }
 
-static void sigwinch_handler(int sig)
+static void sigwinch_handler(int )
 {
 	syslog(LOG_NOTICE, "received SIGWINCH, KeyboardSignal pressed");
 }
 
-static void sigpwr_handler(int sig)
+static void sigpwr_handler(int )
 {
 	int fd;
 	char pwr_status = 'F';
@@ -709,7 +709,7 @@ static void sigpwr_handler(int sig)
 	}
 }
 
-static void chld_handler(int sig)
+static void chld_handler(int )
 {
 	int wstatus;
 	pid_t pid;
@@ -1002,7 +1002,7 @@ static void main_loop(void)
 	} /* while(true) */
 }
 
-#ifdef MOUNT_ENTS
+#ifdef ENABLE_AUTOMOUNT
 struct mount_ent {
 	const char *const source;
 	const char *const dest;
@@ -1042,7 +1042,7 @@ int main(int argc, char *argv[]/*, char *envp[]*/)
 	if ( my_pid != 1 )
 		warnx("must be PID 1");
 
-#ifdef MOUNT_ENTS
+#ifdef ENABLE_AUTOMOUNT
     struct stat sb;
 	for ( int i = 0; i < num_mount_ents; i++ )
 		if ( !stat(mount_ents[i].dest, &sb) )
