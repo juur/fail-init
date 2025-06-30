@@ -144,8 +144,8 @@ CC=${CC:-${TOOL}cc}
 CXX=${CXX:-${TOOL}c++}
 AR=${AR:-${TOOL}ar}
 RANLIB=${RANLIB:-${TOOL}ranlib}
-YACC=${YACC:-yacc}
-LEX=${LEX:-flex}
+YACC=${YACC:-}
+LEX=${LEX:-}
 
 # Predefined values, which should not be easily changed
 
